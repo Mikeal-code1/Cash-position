@@ -238,3 +238,28 @@ td .count { font-size: 11px; margin-left: 4px; }
   color: var(--negative); letter-spacing: 0.04em;
   background: rgba(164, 68, 47, 0.08); padding: 3px 8px; border-radius: 3px;
 }
+
+/* --- Added: history page, ghost header link --- */
+.linkbtn.ghost {
+  background: transparent; color: var(--ink); padding: 7px 14px; border: 1px solid var(--line-strong);
+  border-radius: 3px; text-decoration: none; font-family: var(--font-mono), monospace;
+  font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.1em;
+}
+.linkbtn.ghost:hover { background: var(--paper-raised); border-color: var(--brass); }
+
+table.history thead th { font-size: 10px; }
+table.history td { font-size: 13px; vertical-align: top; }
+table.history td.when { white-space: nowrap; font-family: var(--font-mono), monospace; font-size: 12px; color: var(--muted); }
+table.history td.filename { font-family: var(--font-mono), monospace; font-size: 12px; max-width: 220px; word-break: break-all; }
+table.history td.detail { font-family: var(--font-body), serif; font-size: 13.5px; }
+.dim.small { font-size: 11px; margin-top: 3px; color: var(--muted); font-family: var(--font-mono), monospace; }
+.error-msg { color: var(--negative); font-size: 12px; margin-top: 4px; font-family: var(--font-mono), monospace; }
+.kind-tag, .outcome-tag {
+  font-family: var(--font-mono), monospace; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: 0.08em; padding: 3px 8px; border-radius: 3px; white-space: nowrap; display: inline-block;
+}
+.kind-stmt { background: rgba(47, 107, 79, 0.1); color: var(--positive); }
+.kind-pr   { background: rgba(154, 122, 51, 0.12); color: var(--brass); }
+.outcome-success { background: rgba(47, 107, 79, 0.12); color: var(--positive); }
+.outcome-failed  { background: rgba(164, 68, 47, 0.12); color: var(--negative); }
+.outcome-partial { background: rgba(154, 122, 51, 0.12); color: var(--brass); }

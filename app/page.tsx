@@ -328,11 +328,11 @@ export default async function Home({ searchParams }: {
 
   const { data: wkPeriods, error: wkErr } = await sb
     .from("periods").select("id, label, start_date, end_date").eq("cadence", "weekly")
-    .order("start_date", { ascending: false });
+    .order("end_date", { ascending: false }).order("start_date", { ascending: false });
   if (wkErr) errors.push(`periods (weekly): ${wkErr.message}`);
   const { data: moPeriods } = await sb
     .from("periods").select("id, label, start_date, end_date").eq("cadence", "monthly")
-    .order("start_date", { ascending: false });
+    .order("end_date", { ascending: false }).order("start_date", { ascending: false });
 
   const weeklyList = (wkPeriods || []) as Period[];
   const monthlyList = (moPeriods || []) as Period[];
@@ -410,6 +410,7 @@ export default async function Home({ searchParams }: {
         <div className="header-actions">
           <a className="linkbtn primary" href="/import">Import statement</a>
           <a className="linkbtn primary alt" href="/import/payments">Import payment requests</a>
+          <a className="linkbtn ghost" href="/history">History</a>
           <form action="/api/logout" method="post"><button className="linkbtn" type="submit">Sign out</button></form>
         </div>
       </header>

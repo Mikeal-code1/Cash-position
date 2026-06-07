@@ -7,60 +7,62 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-function fmtDay(iso: string) {
-  const [, m, d] = iso.split("-");
-  return `${parseInt(d, 10)} ${MONTHS[parseInt(m, 10) - 1]}`;
-}
-function periodLabel(start: string, end: string) {
-  return `${fmtDay(start)} – ${fmtDay(end)} ${end.slice(0, 4)}`;
+function fmtDay(iso: string) { const [, m, d] = iso.split("-"); return `${parseInt(d, 10)} ${MONTHS[parseInt(m, 10) - 1]}`; }
+function periodLabel(start: string, end: string) { return `${fmtDay(start)} – ${fmtDay(end)} ${end.slice(0, 4)}`; }
+
+// Log a failed import to the audit table, then redirect.
+async function failImport(sb: any, filename: string, fileSize: number, message: string, accountId?: string) {
+  try {
+    await sb.from("import_runs").insert({
+      kind: "bank_statement",
+      original_filename: filename,
+      file_size_bytes: fileSize,
+      account_id: accountId || null,
+      outcome: "failed",
+      error_message: message,
+    });
+  } catch { /* never block the user on logging failure */ }
+  redirect("/import?error=" + encodeURIComponent(message));
 }
 
 export async function importStatement(formData: FormData) {
   const accountId = String(formData.get("account_id") || "");
   const file = formData.get("file") as File | null;
 
+  const filename = file?.name || "(no file)";
+  const fileSize = file?.size || 0;
+  const sb = supabaseServer();
+
   if (!accountId || !file || file.size === 0) {
-    redirect("/import?error=" + encodeURIComponent("Please select an account and a file."));
+    await failImport(sb, filename, fileSize, "Please select an account and a file.", accountId);
   }
 
   // Parse the statement
-  const buf = Buffer.from(await file.arrayBuffer());
+  const buf = Buffer.from(await file!.arrayBuffer());
   let parsed;
-  try {
-    parsed = parseStatement(buf);
-  } catch (e: any) {
-    redirect("/import?error=" + encodeURIComponent(e.message || "Failed to parse the statement."));
+  try { parsed = parseStatement(buf); }
+  catch (e: any) {
+    await failImport(sb, filename, fileSize, e.message || "Failed to parse the statement.", accountId);
+    return;
   }
   if (!parsed.startDate || !parsed.endDate) {
-    redirect("/import?error=" + encodeURIComponent("Statement is missing START DATE or END DATE in its header."));
+    await failImport(sb, filename, fileSize, "Statement is missing START DATE or END DATE in its header.", accountId);
   }
   if (!parsed.reconciled) {
-    redirect(
-      "/import?error=" +
-        encodeURIComponent(
-          `Statement did not reconcile: opening + credits − debits = ${parsed.derivedClosing}, but stated closing = ${parsed.closingBalance}.`,
-        ),
-    );
+    await failImport(sb, filename, fileSize,
+      `Statement did not reconcile: opening + credits − debits = ${parsed.derivedClosing}, but stated closing = ${parsed.closingBalance}.`,
+      accountId);
   }
 
-  const sb = supabaseServer();
-
-  // Look up the account (cadence + currency)
+  // Look up the account
   const { data: acct } = await sb
-    .from("accounts")
-    .select("id, cadence, currency, label")
-    .eq("id", accountId)
-    .single();
-  if (!acct) redirect("/import?error=" + encodeURIComponent("Account not found."));
+    .from("accounts").select("id, cadence, currency, label").eq("id", accountId).single();
+  if (!acct) await failImport(sb, filename, fileSize, "Account not found.", accountId);
 
-  // Find or create the period matching the statement's date range.
+  // Find or create the period
   const { data: existing } = await sb
-    .from("periods")
-    .select("id")
-    .eq("cadence", acct.cadence)
-    .eq("start_date", parsed.startDate)
-    .eq("end_date", parsed.endDate)
-    .maybeSingle();
+    .from("periods").select("id").eq("cadence", acct!.cadence)
+    .eq("start_date", parsed.startDate).eq("end_date", parsed.endDate).maybeSingle();
 
   let periodId: string;
   let createdNewPeriod = false;
@@ -68,98 +70,90 @@ export async function importStatement(formData: FormData) {
     periodId = existing.id;
   } else {
     createdNewPeriod = true;
-    // Carry-forward source: most recent prior period of the same cadence
     const { data: priorPeriod } = await sb
-      .from("periods")
-      .select("id")
-      .eq("cadence", acct.cadence)
+      .from("periods").select("id").eq("cadence", acct!.cadence)
       .lt("start_date", parsed.startDate)
-      .order("start_date", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .order("start_date", { ascending: false }).limit(1).maybeSingle();
 
     const { data: newPeriod } = await sb
-      .from("periods")
-      .insert({
-        cadence: acct.cadence,
-        start_date: parsed.startDate,
-        end_date: parsed.endDate,
+      .from("periods").insert({
+        cadence: acct!.cadence, start_date: parsed.startDate, end_date: parsed.endDate,
         label: periodLabel(parsed.startDate, parsed.endDate),
-      })
-      .select("id")
-      .single();
+      }).select("id").single();
     periodId = newPeriod!.id;
 
-    // Pre-seed balances for ALL active accounts of this cadence, carrying
-    // forward each account's opening from the prior period (or 0 if none).
-    // The current account's opening is then overwritten with the bank's value below.
     const { data: activeAccts } = await sb
-      .from("accounts")
-      .select("id")
-      .eq("cadence", acct.cadence)
-      .eq("is_active", true);
+      .from("accounts").select("id").eq("cadence", acct!.cadence).eq("is_active", true);
 
     const carry: Record<string, number> = {};
     if (priorPeriod) {
-      const { data: pb } = await sb
-        .from("balances")
-        .select("account_id, opening")
-        .eq("period_id", priorPeriod.id);
-      (pb || []).forEach((b: any) => {
-        carry[b.account_id] = Number(b.opening);
-      });
+      const { data: pb } = await sb.from("balances")
+        .select("account_id, opening").eq("period_id", priorPeriod.id);
+      (pb || []).forEach((b: any) => { carry[b.account_id] = Number(b.opening); });
     }
     const seedRows = (activeAccts || []).map((a: any) => ({
-      account_id: a.id,
-      period_id: periodId,
-      opening: carry[a.id] ?? 0,
+      account_id: a.id, period_id: periodId, opening: carry[a.id] ?? 0,
     }));
     if (seedRows.length) await sb.from("balances").insert(seedRows);
   }
 
-  // Upsert this account's opening to the statement's bank-true opening.
-  await sb
-    .from("balances")
-    .upsert(
-      { account_id: accountId, period_id: periodId, opening: parsed.openingBalance },
-      { onConflict: "account_id,period_id" },
-    );
+  // Upsert this account's opening to bank-true value
+  await sb.from("balances").upsert(
+    { account_id: accountId, period_id: periodId, opening: parsed.openingBalance },
+    { onConflict: "account_id,period_id" },
+  );
 
-  // Replace this account's transactions in this period (idempotent re-import).
-  // First, revert any payment requests that point at txns we're about to delete,
-  // so they go back to 'pending' and can be re-matched against the new txns.
+  // Count txns being replaced (for the audit note)
+  const { count: priorCount } = await sb
+    .from("transactions").select("id", { count: "exact", head: true })
+    .eq("account_id", accountId).eq("period_id", periodId);
+
+  // Idempotent replacement: unmatch payment_requests, delete txns, re-insert.
   await unmatchTransactionsForAccountPeriod(sb, accountId, periodId);
   await sb.from("transactions").delete().eq("account_id", accountId).eq("period_id", periodId);
 
   if (parsed.transactions.length) {
     const rows = parsed.transactions.map((t) => ({
-      account_id: accountId,
-      period_id: periodId,
-      txn_date: t.date,
-      description: t.description,
-      amount: t.amount,
-      currency: acct.currency,
-      direction: t.direction,
-      status: "confirmed",
-      is_transfer: false,
+      account_id: accountId, period_id: periodId,
+      txn_date: t.date, description: t.description,
+      amount: t.amount, currency: acct!.currency,
+      direction: t.direction, status: "confirmed", is_transfer: false,
     }));
-    // Chunked insert (Harvard has 211 rows; well within limits).
     const CHUNK = 500;
     for (let i = 0; i < rows.length; i += CHUNK) {
       const slice = rows.slice(i, i + CHUNK);
       const { error } = await sb.from("transactions").insert(slice);
       if (error) {
-        redirect("/import?error=" + encodeURIComponent("Insert failed: " + error.message));
+        await failImport(sb, filename, fileSize, "Insert failed: " + error.message, accountId);
       }
     }
   }
 
-  // Auto-match any pending payment requests now that fresh bank txns are in place.
+  // Auto-match pending payment requests
   await matchRequestsForAccount(sb, accountId);
+
+  // Audit log
+  const notes = createdNewPeriod
+    ? `Created new period ${periodLabel(parsed.startDate, parsed.endDate)}.`
+    : (priorCount && priorCount > 0 ? `Replaced ${priorCount} existing transactions for ${acct!.label}.` : null);
+  await sb.from("import_runs").insert({
+    kind: "bank_statement",
+    original_filename: filename,
+    file_size_bytes: fileSize,
+    account_id: accountId,
+    period_id: periodId,
+    statement_start: parsed.startDate,
+    statement_end: parsed.endDate,
+    opening_balance: parsed.openingBalance,
+    closing_balance: parsed.closingBalance,
+    txn_count: parsed.transactions.length,
+    outcome: "success",
+    notes,
+  });
 
   revalidatePath("/");
   redirect(
-    `/?wk=${periodId}&imported=${encodeURIComponent(acct.label)}&count=${parsed.transactions.length}${
+    `/?wk=${periodId}&imported=${encodeURIComponent(acct!.label)}&count=${parsed.transactions.length}${
       createdNewPeriod ? "&new=1" : ""
     }`,
   );
