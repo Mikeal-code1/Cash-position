@@ -149,3 +149,25 @@ button.submit:hover { background: var(--brass); }
 .login-card h1 { font-family: var(--font-display), serif; font-size: 24px; margin: 0 0 4px; }
 .login-card p { color: var(--muted); font-size: 13.5px; margin: 0 0 22px; }
 .login-error { color: var(--negative); font-size: 13px; margin-top: 10px; }
+
+/* --- Added: board header, period select, chart, banner --- */
+.board-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.period-select {
+  font-family: var(--font-mono), monospace; font-size: 12px; color: var(--ink);
+  background: var(--paper-raised); border: 1px solid var(--line-strong); border-radius: 3px;
+  padding: 6px 10px; cursor: pointer;
+}
+.period-select:focus { outline: none; border-color: var(--brass); }
+
+.chart-eyebrow { margin-top: 34px; }
+.chart-card { padding: 14px 16px 6px; }
+
+.banner {
+  background: #fbeeea; border: 1px solid #e3b9ac; border-left: 4px solid var(--negative);
+  border-radius: 4px; padding: 16px 18px; margin: 20px 0 8px; font-size: 14px;
+}
+.banner strong { display: block; margin-bottom: 6px; color: var(--negative); font-family: var(--font-display), serif; }
+.banner ul { margin: 6px 0; padding-left: 18px; }
+.banner li { margin: 3px 0; font-family: var(--font-mono), monospace; font-size: 12.5px; }
+.banner-hint { margin-top: 8px; color: var(--muted); font-size: 13px; }
+.banner code { background: rgba(29,26,21,0.06); padding: 1px 5px; border-radius: 3px; font-size: 12px; margin: 0 2px; }
