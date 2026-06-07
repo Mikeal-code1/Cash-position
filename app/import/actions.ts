@@ -2,6 +2,7 @@
 
 import { supabaseServer } from "@/lib/supabaseServer";
 import { parseStatement } from "@/lib/parseStatement";
+import { matchRequestsForAccount, unmatchTransactionsForAccountPeriod } from "@/lib/matcher";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
@@ -125,6 +126,9 @@ export async function importStatement(formData: FormData) {
     );
 
   // Replace this account's transactions in this period (idempotent re-import).
+  // First, revert any payment requests that point at txns we're about to delete,
+  // so they go back to 'pending' and can be re-matched against the new txns.
+  await unmatchTransactionsForAccountPeriod(sb, accountId, periodId);
   await sb.from("transactions").delete().eq("account_id", accountId).eq("period_id", periodId);
 
   if (parsed.transactions.length) {
@@ -149,6 +153,9 @@ export async function importStatement(formData: FormData) {
       }
     }
   }
+
+  // Auto-match any pending payment requests now that fresh bank txns are in place.
+  await matchRequestsForAccount(sb, accountId);
 
   revalidatePath("/");
   redirect(

@@ -209,6 +209,99 @@ function SuccessBanner({ company, count, isNew }: { company: string; count: numb
   );
 }
 
+function PaymentRequestBanner({ inserted, duped, matched, unmapped }: {
+  inserted: number; duped: number; matched: number; unmapped: string;
+}) {
+  return (
+    <div className="banner success">
+      <strong>Payment requests imported — {inserted} new, {duped} duplicates skipped, {matched} auto-matched to bank transactions.</strong>
+      {unmapped ? (
+        <div className="banner-hint">
+          The following company codes weren&apos;t recognised and were skipped: <code>{unmapped}</code>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+type PaymentRequest = {
+  id: string; account_id: string; request_date: string;
+  description: string; amount: number; status: "pending" | "matched" | "cancelled";
+};
+
+function LiquidityPanel({
+  accounts, results, requests, latestEnd,
+}: {
+  accounts: Account[]; results: AccountPeriodResult[];
+  requests: PaymentRequest[]; latestEnd: string | null;
+}) {
+  const rows = accounts.map((a) => {
+    const closing = results.find((r) => r.accountId === a.id)?.closing ?? 0;
+    const pending = requests.filter((r) => r.account_id === a.id && r.status === "pending");
+    const pendingAmount = pending.reduce((s, r) => s + Number(r.amount), 0);
+    const flagged = latestEnd
+      ? pending.filter((r) => r.request_date <= latestEnd).length
+      : 0;
+    const projected = closing - pendingAmount;
+    return { account: a, closing, pendingAmount, pendingCount: pending.length, flagged, projected };
+  });
+  const total = (k: "closing" | "pendingAmount" | "projected") =>
+    rows.reduce((s, r) => s + r[k], 0);
+  const totalFlagged = rows.reduce((s, r) => s + r.flagged, 0);
+
+  return (
+    <>
+      <div className="eyebrow chart-eyebrow">Real-time liquidity (NGN)</div>
+      <div className="liquidity-note">
+        Pending payment requests reduce available cash before they hit the bank.
+        Flagged rows are requests dated on or before {latestEnd ?? "—"} that have no
+        matching bank transaction yet.
+      </div>
+      <div className="card">
+        <table>
+          <thead>
+            <tr>
+              <th>Account</th>
+              <th>Bank closing</th>
+              <th>Pending out</th>
+              <th>Projected</th>
+              <th>Review</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.account.id}>
+                <td>{r.account.label}</td>
+                <td>{money(r.closing, "NGN")}</td>
+                <td className={r.pendingAmount > 0 ? "neg" : "dim"}>
+                  {r.pendingAmount > 0
+                    ? <>{money(r.pendingAmount, "NGN")} <span className="dim count">({r.pendingCount})</span></>
+                    : money(0, "NGN")}
+                </td>
+                <td className={r.projected < 0 ? "neg" : ""}>{money(r.projected, "NGN")}</td>
+                <td>
+                  {r.flagged > 0 ? <span className="flag">⚠ {r.flagged} flagged</span>
+                   : r.pendingCount > 0 ? <span className="dim">{r.pendingCount} awaiting</span>
+                   : <span className="dim">—</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td>Total</td>
+              <td>{money(total("closing"), "NGN")}</td>
+              <td className={total("pendingAmount") > 0 ? "neg" : "dim"}>{money(total("pendingAmount"), "NGN")}</td>
+              <td className={total("projected") < 0 ? "neg" : ""}>{money(total("projected"), "NGN")}</td>
+              <td>{totalFlagged > 0 ? <span className="flag">⚠ {totalFlagged}</span> : <span className="dim">—</span>}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </>
+  );
+}
+
 function sliceLabelFor(from?: string, to?: string, period?: Period): string | undefined {
   if (!from && !to) return undefined;
   const f = from || period?.start_date || "";
@@ -218,7 +311,8 @@ function sliceLabelFor(from?: string, to?: string, period?: Period): string | un
 
 export default async function Home({ searchParams }: {
   searchParams: { wk?: string; mo?: string; wkFrom?: string; wkTo?: string; moFrom?: string; moTo?: string;
-                  imported?: string; count?: string; new?: string };
+                  imported?: string; count?: string; new?: string;
+                  pr_inserted?: string; pr_duped?: string; pr_matched?: string; pr_unmapped?: string };
 }) {
   let sb;
   try { sb = supabaseServer(); }
@@ -270,6 +364,15 @@ export default async function Home({ searchParams }: {
   const ngnAccounts = accounts.filter((a) => a.cadence === "weekly");
   const fxAccounts = accounts.filter((a) => a.cadence === "monthly");
 
+  // --- Liquidity outlook data: payment requests + each NGN account's latest period end ---
+  const ngnAcctIds = ngnAccounts.map((a) => a.id);
+  const { data: prRaw } = ngnAcctIds.length
+    ? await sb.from("payment_requests")
+        .select("id, account_id, request_date, description, amount, status")
+        .in("account_id", ngnAcctIds)
+    : { data: [] as any[] };
+  const latestWeeklyEnd = weeklyList.length ? weeklyList[0].end_date : null;
+
   const wkRange: DateRange = { from: searchParams.wkFrom, to: searchParams.wkTo };
   const moRange: DateRange = { from: searchParams.moFrom, to: searchParams.moTo };
 
@@ -287,6 +390,16 @@ export default async function Home({ searchParams }: {
         isNew={searchParams.new === "1"} />
     : null;
 
+  const prImportMsg = searchParams.pr_inserted
+    ? <PaymentRequestBanner
+        inserted={parseInt(searchParams.pr_inserted || "0", 10)}
+        duped={parseInt(searchParams.pr_duped || "0", 10)}
+        matched={parseInt(searchParams.pr_matched || "0", 10)}
+        unmapped={searchParams.pr_unmapped || ""} />
+    : null;
+
+  const paymentRequests = (prRaw || []) as PaymentRequest[];
+
   return (
     <div className="wrap">
       <header className="site">
@@ -296,12 +409,14 @@ export default async function Home({ searchParams }: {
         </div>
         <div className="header-actions">
           <a className="linkbtn primary" href="/import">Import statement</a>
+          <a className="linkbtn primary alt" href="/import/payments">Import payment requests</a>
           <form action="/api/logout" method="post"><button className="linkbtn" type="submit">Sign out</button></form>
         </div>
       </header>
 
       {showError ? <ErrorBanner messages={errors} /> : null}
       {importedMsg}
+      {prImportMsg}
 
       <Board
         title="NGN Weekly"
@@ -317,6 +432,12 @@ export default async function Home({ searchParams }: {
         <>
           <div className="eyebrow chart-eyebrow">Cash movement by company (NGN)</div>
           <Waterfall accounts={ngnAccounts} results={ngnResults} />
+          <LiquidityPanel
+            accounts={ngnAccounts}
+            results={ngnResults}
+            requests={paymentRequests}
+            latestEnd={latestWeeklyEnd}
+          />
         </>
       ) : null}
 
