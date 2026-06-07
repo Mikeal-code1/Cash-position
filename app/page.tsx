@@ -1,19 +1,18 @@
 import { supabaseServer } from "@/lib/supabaseServer";
-import { computePeriod, type Transaction, type Transfer, type AccountPeriodResult } from "@/lib/cashEngine";
+import { computePeriod, type Transaction, type Transfer, type AccountPeriodResult, type DateRange } from "@/lib/cashEngine";
 import { addTransaction, addTransfer } from "./actions";
 import { PeriodSelect } from "./PeriodSelect";
 
 export const dynamic = "force-dynamic";
 
 type Account = { id: string; company: string; label: string; currency: string; cadence: "weekly" | "monthly" };
-type Period = { id: string; label: string };
+type Period = { id: string; label: string; start_date: string; end_date: string };
 
 function money(n: number, currency: string) {
   return new Intl.NumberFormat("en-NG", { style: "currency", currency, minimumFractionDigits: 2 }).format(n);
 }
 function compact(n: number) {
-  const a = Math.abs(n);
-  const s = n < 0 ? "-" : "";
+  const a = Math.abs(n); const s = n < 0 ? "-" : "";
   if (a >= 1e9) return `${s}₦${(a / 1e9).toFixed(1)}b`;
   if (a >= 1e6) return `${s}₦${(a / 1e6).toFixed(1)}m`;
   if (a >= 1e3) return `${s}₦${(a / 1e3).toFixed(0)}k`;
@@ -24,20 +23,54 @@ function cell(n: number, currency: string) {
   return <td className={cls}>{money(n, currency)}</td>;
 }
 
-function Board({
-  title, periodControl, accounts, results, showTotal, currency,
+function DateFilter({
+  period, fromParam, toParam, fromVal, toVal, preserve,
 }: {
-  title: string; periodControl: React.ReactNode; accounts: Account[];
-  results: AccountPeriodResult[]; showTotal: boolean; currency?: string;
+  period?: Period; fromParam: string; toParam: string; fromVal?: string; toVal?: string;
+  preserve: Record<string, string | undefined>;
+}) {
+  if (!period) return null;
+  const hasFilter = Boolean(fromVal || toVal);
+  return (
+    <form className="date-filter" method="get">
+      {Object.entries(preserve).map(([k, v]) =>
+        v ? <input key={k} type="hidden" name={k} value={v} /> : null,
+      )}
+      <label>From <input type="date" name={fromParam}
+        min={period.start_date} max={period.end_date}
+        defaultValue={fromVal || period.start_date} /></label>
+      <label>To <input type="date" name={toParam}
+        min={period.start_date} max={period.end_date}
+        defaultValue={toVal || period.end_date} /></label>
+      <button type="submit" className="apply">Apply</button>
+      {hasFilter ? (
+        <a href={`/?${new URLSearchParams(
+          Object.entries(preserve).filter(([, v]) => v) as [string, string][],
+        ).toString()}`} className="clear-link">Clear</a>
+      ) : null}
+    </form>
+  );
+}
+
+function Board({
+  title, periodLabel, periodControl, dateFilter, accounts, results, showTotal, currency, sliceLabel,
+}: {
+  title: string; periodLabel: string; periodControl: React.ReactNode; dateFilter: React.ReactNode;
+  accounts: Account[]; results: AccountPeriodResult[]; showTotal: boolean; currency?: string;
+  sliceLabel?: string;
 }) {
   const byId = (id: string) => results.find((r) => r.accountId === id);
   const total = (k: keyof AccountPeriodResult) => results.reduce((s, r) => s + (r[k] as number), 0);
   return (
     <>
       <div className="board-head">
-        <div className="eyebrow">{title}</div>
+        <div className="board-head-left">
+          <div className="eyebrow">{title} · {periodLabel}</div>
+          {sliceLabel ? <div className="slice-label">Showing {sliceLabel}</div> : null}
+        </div>
         {periodControl}
       </div>
+      {dateFilter}
       <div className="card">
         <table>
           <thead>
@@ -50,8 +83,7 @@ function Board({
             {accounts.length === 0 ? (
               <tr><td colSpan={6} className="dim">No accounts for this board.</td></tr>
             ) : accounts.map((a) => {
-              const r = byId(a.id);
-              if (!r) return null;
+              const r = byId(a.id); if (!r) return null;
               return (
                 <tr key={a.id}>
                   <td>{a.label}</td>
@@ -82,7 +114,6 @@ function Board({
   );
 }
 
-// Cash waterfall: opening total → each company's net movement → closing total.
 function Waterfall({ accounts, results }: { accounts: Account[]; results: AccountPeriodResult[] }) {
   const byId = (id: string) => results.find((r) => r.accountId === id);
   const openingTotal = results.reduce((s, r) => s + r.opening, 0);
@@ -98,10 +129,8 @@ function Waterfall({ accounts, results }: { accounts: Account[]; results: Accoun
     { label: "Closing", value: closingTotal, kind: "total" },
   ];
 
-  // Build cumulative levels for scaling.
-  const levels: number[] = [0];
+  const levels: number[] = [0, openingTotal];
   let run = openingTotal;
-  levels.push(openingTotal);
   for (const s of steps.slice(1, -1)) { run += s.value; levels.push(run); }
   levels.push(closingTotal);
   const yMax = Math.max(...levels) * 1.08 || 1;
@@ -115,8 +144,7 @@ function Waterfall({ accounts, results }: { accounts: Account[]; results: Accoun
   const y = (v: number) => mT + plotH - ((v - yMin) / (yMax - yMin)) * plotH;
 
   let cum = openingTotal;
-  const bars = steps.map((s, i) => {
-    const cx = mL + slot * i + slot / 2;
+  const bars = steps.map((s) => {
     let top: number, bottom: number, color: string;
     if (s.kind === "total") {
       top = y(s.value); bottom = y(yMin > 0 ? yMin : 0); color = "var(--ink)";
@@ -125,8 +153,7 @@ function Waterfall({ accounts, results }: { accounts: Account[]; results: Accoun
       top = y(Math.max(start, end)); bottom = y(Math.min(start, end));
       color = s.value >= 0 ? "var(--positive)" : "var(--negative)";
     }
-    const h = Math.max(Math.abs(bottom - top), 1);
-    return { s, cx, x: cx - bw / 2, top, h, color };
+    return { s, top, h: Math.max(Math.abs(bottom - top), 1), color };
   });
 
   return (
@@ -135,45 +162,67 @@ function Waterfall({ accounts, results }: { accounts: Account[]; results: Accoun
            aria-label="Cash movement by company, opening to closing">
         <line x1={mL} y1={y(yMin > 0 ? yMin : 0)} x2={W - mR} y2={y(yMin > 0 ? yMin : 0)}
               stroke="var(--line-strong)" strokeWidth="1" />
-        {bars.map((b, i) => (
-          <g key={i}>
-            <rect x={b.x} y={b.top} width={bw} height={b.h} fill={b.color} rx="2" />
-            <text x={b.cx} y={b.top - 6} textAnchor="middle"
-                  fontSize="11" fontFamily="var(--font-mono)"
-                  fill={b.s.kind === "total" ? "var(--ink)" : (b.s.value >= 0 ? "var(--positive)" : "var(--negative)")}>
-              {b.s.kind === "total" ? compact(b.s.value) : (b.s.value === 0 ? "" : compact(b.s.value))}
-            </text>
-            <text x={b.cx} y={H - mB + 18} textAnchor="middle"
-                  fontSize="10.5" fontFamily="var(--font-mono)" fill="var(--muted)"
-                  transform={`rotate(35 ${b.cx} ${H - mB + 18})`}>
-              {b.s.label.length > 14 ? b.s.label.slice(0, 13) + "…" : b.s.label}
-            </text>
-          </g>
-        ))}
+        {bars.map((b, i) => {
+          const cx = mL + slot * i + slot / 2;
+          return (
+            <g key={i}>
+              <rect x={cx - bw / 2} y={b.top} width={bw} height={b.h} fill={b.color} rx="2" />
+              <text x={cx} y={b.top - 6} textAnchor="middle"
+                    fontSize="11" fontFamily="var(--font-mono)"
+                    fill={b.s.kind === "total" ? "var(--ink)" : (b.s.value >= 0 ? "var(--positive)" : "var(--negative)")}>
+                {b.s.kind === "total" ? compact(b.s.value) : (b.s.value === 0 ? "" : compact(b.s.value))}
+              </text>
+              <text x={cx} y={H - mB + 18} textAnchor="middle"
+                    fontSize="10.5" fontFamily="var(--font-mono)" fill="var(--muted)"
+                    transform={`rotate(35 ${cx} ${H - mB + 18})`}>
+                {b.s.label.length > 14 ? b.s.label.slice(0, 13) + "…" : b.s.label}
+              </text>
+            </g>
+          );
+        })}
       </svg>
     </div>
   );
 }
 
-function Banner({ messages }: { messages: string[] }) {
+function ErrorBanner({ messages }: { messages: string[] }) {
   return (
     <div className="banner">
       <strong>The app connected, but couldn&apos;t read your data.</strong>
       <ul>{messages.map((m, i) => <li key={i}>{m}</li>)}</ul>
       <div className="banner-hint">
-        Most likely fixes: in Vercel → Environment Variables, ensure <code>SUPABASE_URL</code> ends in
-        <code>.supabase.co</code> (no <code>/rest/v1</code>) and that <code>SUPABASE_SERVICE_ROLE_KEY</code>
-        is the service_role / secret key — then redeploy.
+        In Vercel → Environment Variables, ensure <code>SUPABASE_URL</code> ends in
+        <code>.supabase.co</code> (no <code>/rest/v1</code>) and that
+        <code>SUPABASE_SERVICE_ROLE_KEY</code> is the service_role / secret key.
+        Then redeploy.
       </div>
     </div>
   );
 }
 
-export default async function Home({ searchParams }: { searchParams: { wk?: string; mo?: string } }) {
+function SuccessBanner({ company, count, isNew }: { company: string; count: number; isNew: boolean }) {
+  return (
+    <div className="banner success">
+      <strong>Imported {company} — {count} transactions loaded.</strong>
+      {isNew ? <div className="banner-hint">A new period was created for the statement&apos;s date range and is now selected.</div> : null}
+    </div>
+  );
+}
+
+function sliceLabelFor(from?: string, to?: string, period?: Period): string | undefined {
+  if (!from && !to) return undefined;
+  const f = from || period?.start_date || "";
+  const t = to || period?.end_date || "";
+  return `${f} → ${t}`;
+}
+
+export default async function Home({ searchParams }: {
+  searchParams: { wk?: string; mo?: string; wkFrom?: string; wkTo?: string; moFrom?: string; moTo?: string;
+                  imported?: string; count?: string; new?: string };
+}) {
   let sb;
-  try { sb = supabaseServer(); } catch (e: any) {
-    return <div className="wrap"><Banner messages={[e.message]} /></div>;
-  }
+  try { sb = supabaseServer(); }
+  catch (e: any) { return <div className="wrap"><ErrorBanner messages={[e.message]} /></div>; }
 
   const errors: string[] = [];
 
@@ -184,20 +233,24 @@ export default async function Home({ searchParams }: { searchParams: { wk?: stri
   const accounts = (accountsRaw || []) as Account[];
 
   const { data: wkPeriods, error: wkErr } = await sb
-    .from("periods").select("id, label").eq("cadence", "weekly").order("start_date", { ascending: false });
-  if (wkErr) errors.push(`periods: ${wkErr.message}`);
+    .from("periods").select("id, label, start_date, end_date").eq("cadence", "weekly")
+    .order("start_date", { ascending: false });
+  if (wkErr) errors.push(`periods (weekly): ${wkErr.message}`);
   const { data: moPeriods } = await sb
-    .from("periods").select("id, label").eq("cadence", "monthly").order("start_date", { ascending: false });
+    .from("periods").select("id, label, start_date, end_date").eq("cadence", "monthly")
+    .order("start_date", { ascending: false });
 
   const weeklyList = (wkPeriods || []) as Period[];
   const monthlyList = (moPeriods || []) as Period[];
   const wkId = searchParams.wk || weeklyList[0]?.id;
   const moId = searchParams.mo || monthlyList[0]?.id;
+  const wkPeriod = weeklyList.find((p) => p.id === wkId);
+  const moPeriod = monthlyList.find((p) => p.id === moId);
   const periodIds = [wkId, moId].filter(Boolean) as string[];
 
   const { data: balancesRaw } = await sb.from("balances").select("account_id, period_id, opening").in("period_id", periodIds);
   const { data: txnsRaw } = await sb.from("transactions")
-    .select("account_id, period_id, amount, direction, is_transfer").eq("status", "confirmed").in("period_id", periodIds);
+    .select("account_id, period_id, amount, direction, is_transfer, txn_date").eq("status", "confirmed").in("period_id", periodIds);
   const { data: transfersRaw } = await sb.from("transfers")
     .select("from_account_id, to_account_id, amount, period_id").in("period_id", periodIds);
 
@@ -207,21 +260,32 @@ export default async function Home({ searchParams }: { searchParams: { wk?: stri
     return m;
   };
   const txnsFor = (pid?: string): Transaction[] =>
-    (txnsRaw || []).filter((t) => t.period_id === pid).map((t) => ({
-      accountId: t.account_id, amount: Number(t.amount), direction: t.direction, isTransfer: t.is_transfer }));
+    (txnsRaw || []).filter((t) => t.period_id === pid).map((t: any) => ({
+      accountId: t.account_id, amount: Number(t.amount), direction: t.direction,
+      isTransfer: t.is_transfer, date: t.txn_date }));
   const transfersFor = (pid?: string): Transfer[] =>
-    (transfersRaw || []).filter((t) => t.period_id === pid).map((t) => ({
+    (transfersRaw || []).filter((t) => t.period_id === pid).map((t: any) => ({
       fromAccountId: t.from_account_id, toAccountId: t.to_account_id, amount: Number(t.amount) }));
 
   const ngnAccounts = accounts.filter((a) => a.cadence === "weekly");
   const fxAccounts = accounts.filter((a) => a.cadence === "monthly");
-  const ngnResults = computePeriod(openingsFor(wkId), txnsFor(wkId), transfersFor(wkId));
-  const fxResults = computePeriod(openingsFor(moId), txnsFor(moId), transfersFor(moId));
 
-  const showBanner = errors.length > 0 || (accounts.length === 0 && !accErr);
+  const wkRange: DateRange = { from: searchParams.wkFrom, to: searchParams.wkTo };
+  const moRange: DateRange = { from: searchParams.moFrom, to: searchParams.moTo };
+
+  const ngnResults = computePeriod(openingsFor(wkId), txnsFor(wkId), transfersFor(wkId), wkRange);
+  const fxResults = computePeriod(openingsFor(moId), txnsFor(moId), transfersFor(moId), moRange);
+
+  const showError = errors.length > 0 || (accounts.length === 0 && !accErr);
   if (accounts.length === 0 && !accErr) {
-    errors.push("Connected successfully, but found 0 accounts. Either the URL points at the wrong project, the key is the anon key (not service_role), or the seed didn't run.");
+    errors.push("Connected, but found 0 accounts. Likely causes: wrong project URL, anon key instead of service_role, or seed.sql didn't run.");
   }
+
+  const importedMsg = searchParams.imported
+    ? <SuccessBanner company={decodeURIComponent(searchParams.imported)}
+        count={parseInt(searchParams.count || "0", 10)}
+        isNew={searchParams.new === "1"} />
+    : null;
 
   return (
     <div className="wrap">
@@ -230,15 +294,24 @@ export default async function Home({ searchParams }: { searchParams: { wk?: stri
           <h1>Cash Position</h1>
           <div className="meta">Metis Capital — group cash tracker</div>
         </div>
-        <form action="/api/logout" method="post"><button className="linkbtn" type="submit">Sign out</button></form>
+        <div className="header-actions">
+          <a className="linkbtn primary" href="/import">Import statement</a>
+          <form action="/api/logout" method="post"><button className="linkbtn" type="submit">Sign out</button></form>
+        </div>
       </header>
 
-      {showBanner ? <Banner messages={errors} /> : null}
+      {showError ? <ErrorBanner messages={errors} /> : null}
+      {importedMsg}
 
       <Board
         title="NGN Weekly"
+        periodLabel={wkPeriod?.label || "—"}
         periodControl={<PeriodSelect periods={weeklyList} current={wkId || ""} param="wk" />}
-        accounts={ngnAccounts} results={ngnResults} showTotal currency="NGN" />
+        dateFilter={<DateFilter period={wkPeriod} fromParam="wkFrom" toParam="wkTo"
+                     fromVal={searchParams.wkFrom} toVal={searchParams.wkTo}
+                     preserve={{ wk: wkId, mo: moId, moFrom: searchParams.moFrom, moTo: searchParams.moTo }} />}
+        accounts={ngnAccounts} results={ngnResults} showTotal currency="NGN"
+        sliceLabel={sliceLabelFor(searchParams.wkFrom, searchParams.wkTo, wkPeriod)} />
 
       {ngnAccounts.length > 0 ? (
         <>
@@ -249,10 +322,15 @@ export default async function Home({ searchParams }: { searchParams: { wk?: stri
 
       <Board
         title="Foreign Monthly"
+        periodLabel={moPeriod?.label || "—"}
         periodControl={<PeriodSelect periods={monthlyList} current={moId || ""} param="mo" />}
-        accounts={fxAccounts} results={fxResults} showTotal={false} />
+        dateFilter={<DateFilter period={moPeriod} fromParam="moFrom" toParam="moTo"
+                     fromVal={searchParams.moFrom} toVal={searchParams.moTo}
+                     preserve={{ wk: wkId, mo: moId, wkFrom: searchParams.wkFrom, wkTo: searchParams.wkTo }} />}
+        accounts={fxAccounts} results={fxResults} showTotal={false}
+        sliceLabel={sliceLabelFor(searchParams.moFrom, searchParams.moTo, moPeriod)} />
 
-      <div className="eyebrow">Record activity</div>
+      <div className="eyebrow">Record activity manually</div>
       <div className="panels">
         <div className="panel">
           <h3>Add transaction</h3>
