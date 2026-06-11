@@ -3,17 +3,19 @@ import { importStatement } from "./actions";
 
 export const dynamic = "force-dynamic";
 
-type Account = { id: string; label: string; cadence: "weekly" | "monthly" };
+type Account = { id: string; label: string; cadence: "weekly" | "monthly"; currency: string };
 
 export default async function ImportPage({ searchParams }: { searchParams: { error?: string } }) {
   const sb = supabaseServer();
   const { data: accountsRaw } = await sb
     .from("accounts")
-    .select("id, label, cadence")
-    .eq("cadence", "weekly")
+    .select("id, label, cadence, currency")
     .eq("is_active", true)
+    .order("cadence")
     .order("label");
   const accounts = (accountsRaw || []) as Account[];
+  const ngn = accounts.filter((a) => a.cadence === "weekly");
+  const foreign = accounts.filter((a) => a.cadence === "monthly");
 
   return (
     <div className="wrap">
@@ -37,15 +39,22 @@ export default async function ImportPage({ searchParams }: { searchParams: { err
           <div className="field">
             <label htmlFor="acct">Account</label>
             <select id="acct" name="account_id" required defaultValue="">
-              <option value="" disabled>Choose a company…</option>
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>{a.label}</option>
-              ))}
+              <option value="" disabled>Choose an account…</option>
+              <optgroup label="NGN — weekly board">
+                {ngn.map((a) => (
+                  <option key={a.id} value={a.id}>{a.label} ({a.currency})</option>
+                ))}
+              </optgroup>
+              <optgroup label="Foreign — monthly board">
+                {foreign.map((a) => (
+                  <option key={a.id} value={a.id}>{a.label} ({a.currency})</option>
+                ))}
+              </optgroup>
             </select>
           </div>
           <div className="field">
-            <label htmlFor="file">Statement file (.xlsx)</label>
-            <input id="file" name="file" type="file" accept=".xlsx" required />
+            <label htmlFor="file">Statement file (.xlsx or .pdf)</label>
+            <input id="file" name="file" type="file" accept=".xlsx,.pdf" required />
           </div>
           <button className="submit" type="submit">Parse and import</button>
         </form>
@@ -63,9 +72,12 @@ export default async function ImportPage({ searchParams }: { searchParams: { err
             duplicating it.
           </p>
           <p className="dim">
-            Expected layout: header rows 1–14 (OPENING BAL, CLOSING BAL, START DATE, END DATE,
-            CURRENCY, …), followed by a column-header row containing &quot;TXN DATE&quot; and
-            transactions with TXN DATE · VAL DATE · REMARKS · DEBIT · CREDIT · BALANCE.
+            Supported formats — Excel: the standard layout with header rows (OPENING BAL,
+            CLOSING BAL, START DATE, END DATE, CURRENCY) and a &quot;TXN DATE&quot; column row.
+            PDF: FSDH Merchant Bank (&quot;Customer Statement of Account&quot;) and FAB First Abu
+            Dhabi Bank statements. Every import is reconciled against the bank&apos;s stated
+            closing balance before anything is saved, and the statement&apos;s currency must
+            match the selected account&apos;s currency.
           </p>
         </div>
       </div>

@@ -2,6 +2,7 @@
 
 import { supabaseServer } from "@/lib/supabaseServer";
 import { parseStatement } from "@/lib/parseStatement";
+import { parsePdfStatement } from "@/lib/parsePdfStatement";
 import { matchRequestsForAccount, unmatchTransactionsForAccountPeriod } from "@/lib/matcher";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -37,27 +38,34 @@ export async function importStatement(formData: FormData) {
     await failImport(sb, filename, fileSize, "Please select an account and a file.", accountId);
   }
 
-  // Parse the statement
+  // Look up the account first (needed for the currency guard below)
+  const { data: acct } = await sb
+    .from("accounts").select("id, cadence, currency, label").eq("id", accountId).single();
+  if (!acct) await failImport(sb, filename, fileSize, "Account not found.", accountId);
+
+  // Parse the statement — Excel or PDF, by file extension.
   const buf = Buffer.from(await file!.arrayBuffer());
+  const isPdf = /\.pdf$/i.test(filename) || (buf.length > 4 && buf.subarray(0, 4).toString() === "%PDF");
   let parsed;
-  try { parsed = parseStatement(buf); }
+  try { parsed = isPdf ? await parsePdfStatement(buf) : parseStatement(buf); }
   catch (e: any) {
     await failImport(sb, filename, fileSize, e.message || "Failed to parse the statement.", accountId);
     return;
   }
   if (!parsed.startDate || !parsed.endDate) {
-    await failImport(sb, filename, fileSize, "Statement is missing START DATE or END DATE in its header.", accountId);
+    await failImport(sb, filename, fileSize, "Statement is missing its start/end dates.", accountId);
   }
   if (!parsed.reconciled) {
     await failImport(sb, filename, fileSize,
       `Statement did not reconcile: opening + credits − debits = ${parsed.derivedClosing}, but stated closing = ${parsed.closingBalance}.`,
       accountId);
   }
-
-  // Look up the account
-  const { data: acct } = await sb
-    .from("accounts").select("id, cadence, currency, label").eq("id", accountId).single();
-  if (!acct) await failImport(sb, filename, fileSize, "Account not found.", accountId);
+  // Currency guard: a GBP statement must not be imported into a USD account.
+  if (parsed.currency && acct!.currency && parsed.currency.toUpperCase() !== acct!.currency.toUpperCase()) {
+    await failImport(sb, filename, fileSize,
+      `Currency mismatch: the statement is in ${parsed.currency.toUpperCase()} but the selected account (${acct!.label}) is ${acct!.currency.toUpperCase()}. Pick the matching account and re-upload.`,
+      accountId);
+  }
 
   // Find or create the period
   const { data: existing } = await sb
@@ -152,8 +160,9 @@ export async function importStatement(formData: FormData) {
   });
 
   revalidatePath("/");
+  const periodParam = acct!.cadence === "weekly" ? "wk" : "mo";
   redirect(
-    `/?wk=${periodId}&imported=${encodeURIComponent(acct!.label)}&count=${parsed.transactions.length}${
+    `/?${periodParam}=${periodId}&imported=${encodeURIComponent(acct!.label)}&count=${parsed.transactions.length}${
       createdNewPeriod ? "&new=1" : ""
     }`,
   );
