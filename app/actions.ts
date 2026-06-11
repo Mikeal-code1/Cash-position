@@ -49,25 +49,42 @@ export async function addTransaction(formData: FormData) {
 export async function addTransfer(formData: FormData) {
   const fromId = String(formData.get("from_account_id") || "");
   const toId = String(formData.get("to_account_id") || "");
+  const transferDate = String(formData.get("transfer_date") || "");
   const description = String(formData.get("description") || "");
   const amount = Number(formData.get("amount") || 0);
 
-  if (!fromId || !toId || fromId === toId || amount <= 0) return;
+  if (!fromId || !toId || fromId === toId || amount <= 0 || !transferDate) return;
 
   const sb = supabaseServer();
-  const { data: period } = await sb
+
+  // Prefer the weekly period that contains the chosen date; fall back to the
+  // most recent weekly period if the date falls outside every known window.
+  const { data: containing } = await sb
     .from("periods")
     .select("id")
     .eq("cadence", "weekly")
-    .order("start_date", { ascending: false })
-    .limit(1)
-    .single();
-  if (!period) return;
+    .lte("start_date", transferDate)
+    .gte("end_date", transferDate)
+    .maybeSingle();
+
+  let periodId = containing?.id;
+  if (!periodId) {
+    const { data: latest } = await sb
+      .from("periods")
+      .select("id")
+      .eq("cadence", "weekly")
+      .order("end_date", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    periodId = latest?.id;
+  }
+  if (!periodId) return;
 
   await sb.from("transfers").insert({
-    period_id: period.id,
+    period_id: periodId,
     from_account_id: fromId,
     to_account_id: toId,
+    transfer_date: transferDate,
     description,
     amount,
   });

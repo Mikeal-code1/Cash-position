@@ -346,7 +346,7 @@ export default async function Home({ searchParams }: {
   const { data: txnsRaw } = await sb.from("transactions")
     .select("account_id, period_id, amount, direction, is_transfer, txn_date").eq("status", "confirmed").in("period_id", periodIds);
   const { data: transfersRaw } = await sb.from("transfers")
-    .select("from_account_id, to_account_id, amount, period_id").in("period_id", periodIds);
+    .select("from_account_id, to_account_id, amount, period_id, transfer_date").in("period_id", periodIds);
 
   const openingsFor = (pid?: string): Record<string, number> => {
     const m: Record<string, number> = {};
@@ -359,7 +359,8 @@ export default async function Home({ searchParams }: {
       isTransfer: t.is_transfer, date: t.txn_date }));
   const transfersFor = (pid?: string): Transfer[] =>
     (transfersRaw || []).filter((t) => t.period_id === pid).map((t: any) => ({
-      fromAccountId: t.from_account_id, toAccountId: t.to_account_id, amount: Number(t.amount) }));
+      fromAccountId: t.from_account_id, toAccountId: t.to_account_id,
+      amount: Number(t.amount), date: t.transfer_date }));
 
   const ngnAccounts = accounts.filter((a) => a.cadence === "weekly");
   const fxAccounts = accounts.filter((a) => a.cadence === "monthly");
@@ -492,6 +493,8 @@ export default async function Home({ searchParams }: {
                   {ngnAccounts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
                 </select></div>
             </div>
+            <div className="field"><label htmlFor="tr-date">Date</label>
+              <input id="tr-date" name="transfer_date" type="date" required /></div>
             <div className="field"><label htmlFor="tr-desc">Description</label>
               <input id="tr-desc" name="description" type="text" placeholder="e.g. Working capital" /></div>
             <div className="field"><label htmlFor="tr-amt">Amount (NGN)</label>
