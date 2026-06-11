@@ -95,9 +95,23 @@ export async function importStatement(formData: FormData) {
 
     const carry: Record<string, number> = {};
     if (priorPeriod) {
+      // Carry each account's prior CLOSING (opening + inflows − outflows ± transfers)
       const { data: pb } = await sb.from("balances")
         .select("account_id, opening").eq("period_id", priorPeriod.id);
       (pb || []).forEach((b: any) => { carry[b.account_id] = Number(b.opening); });
+      const { data: pt } = await sb.from("transactions")
+        .select("account_id, amount, direction").eq("period_id", priorPeriod.id).eq("status", "confirmed");
+      (pt || []).forEach((t: any) => {
+        const sign = t.direction === "inflow" ? 1 : -1;
+        carry[t.account_id] = (carry[t.account_id] ?? 0) + sign * Number(t.amount);
+      });
+      const { data: pf } = await sb.from("transfers")
+        .select("from_account_id, to_account_id, amount").eq("period_id", priorPeriod.id);
+      (pf || []).forEach((f: any) => {
+        carry[f.from_account_id] = (carry[f.from_account_id] ?? 0) - Number(f.amount);
+        carry[f.to_account_id] = (carry[f.to_account_id] ?? 0) + Number(f.amount);
+      });
+      Object.keys(carry).forEach((k) => { carry[k] = Math.round((carry[k] + Number.EPSILON) * 100) / 100; });
     }
     const seedRows = (activeAccts || []).map((a: any) => ({
       account_id: a.id, period_id: periodId, opening: carry[a.id] ?? 0,
@@ -160,9 +174,11 @@ export async function importStatement(formData: FormData) {
   });
 
   revalidatePath("/");
-  const periodParam = acct!.cadence === "weekly" ? "wk" : "mo";
+  // NGN imports pin the statement's period; foreign imports land on the
+  // default latest-per-account view so all accounts stay visible together.
+  const pin = acct!.cadence === "weekly" ? `wk=${periodId}&` : "";
   redirect(
-    `/?${periodParam}=${periodId}&imported=${encodeURIComponent(acct!.label)}&count=${parsed.transactions.length}${
+    `/?${pin}imported=${encodeURIComponent(acct!.label)}&count=${parsed.transactions.length}${
       createdNewPeriod ? "&new=1" : ""
     }`,
   );

@@ -1,5 +1,5 @@
 import { supabaseServer } from "@/lib/supabaseServer";
-import { computePeriod, type Transaction, type Transfer, type AccountPeriodResult, type DateRange } from "@/lib/cashEngine";
+import { computePeriod, computeAccountPeriod, type Transaction, type Transfer, type AccountPeriodResult, type DateRange } from "@/lib/cashEngine";
 import { addTransaction, addTransfer } from "./actions";
 import { PeriodSelect } from "./PeriodSelect";
 
@@ -11,12 +11,14 @@ type Period = { id: string; label: string; start_date: string; end_date: string 
 function money(n: number, currency: string) {
   return new Intl.NumberFormat("en-NG", { style: "currency", currency, minimumFractionDigits: 2 }).format(n);
 }
-function compact(n: number) {
+const SYM: Record<string, string> = { NGN: "₦", USD: "$", GBP: "£", AED: "AED " };
+function compact(n: number, currency: string = "NGN") {
+  const sym = SYM[currency] ?? currency + " ";
   const a = Math.abs(n); const s = n < 0 ? "-" : "";
-  if (a >= 1e9) return `${s}₦${(a / 1e9).toFixed(1)}b`;
-  if (a >= 1e6) return `${s}₦${(a / 1e6).toFixed(1)}m`;
-  if (a >= 1e3) return `${s}₦${(a / 1e3).toFixed(0)}k`;
-  return `${s}₦${a.toFixed(0)}`;
+  if (a >= 1e9) return `${s}${sym}${(a / 1e9).toFixed(1)}b`;
+  if (a >= 1e6) return `${s}${sym}${(a / 1e6).toFixed(1)}m`;
+  if (a >= 1e3) return `${s}${sym}${(a / 1e3).toFixed(0)}k`;
+  return `${s}${sym}${a.toFixed(0)}`;
 }
 function cell(n: number, currency: string) {
   const cls = n < 0 ? "neg" : n === 0 ? "dim" : "";
@@ -53,11 +55,11 @@ function DateFilter({
 }
 
 function Board({
-  title, periodLabel, periodControl, dateFilter, accounts, results, showTotal, currency, sliceLabel,
+  title, periodLabel, periodControl, dateFilter, accounts, results, showTotal, currency, sliceLabel, subById,
 }: {
   title: string; periodLabel: string; periodControl: React.ReactNode; dateFilter: React.ReactNode;
   accounts: Account[]; results: AccountPeriodResult[]; showTotal: boolean; currency?: string;
-  sliceLabel?: string;
+  sliceLabel?: string; subById?: Record<string, string>;
 }) {
   const byId = (id: string) => results.find((r) => r.accountId === id);
   const total = (k: keyof AccountPeriodResult) => results.reduce((s, r) => s + (r[k] as number), 0);
@@ -86,7 +88,10 @@ function Board({
               const r = byId(a.id); if (!r) return null;
               return (
                 <tr key={a.id}>
-                  <td>{a.label}</td>
+                  <td>
+                    {a.label}
+                    {subById?.[a.id] ? <div className="dim small">{subById[a.id]}</div> : null}
+                  </td>
                   {cell(r.opening, a.currency)}
                   {cell(r.inflows, a.currency)}
                   {cell(r.outflows, a.currency)}
@@ -114,7 +119,9 @@ function Board({
   );
 }
 
-function Waterfall({ accounts, results }: { accounts: Account[]; results: AccountPeriodResult[] }) {
+function Waterfall({ accounts, results, currency = "NGN" }: {
+  accounts: Account[]; results: AccountPeriodResult[]; currency?: string;
+}) {
   const byId = (id: string) => results.find((r) => r.accountId === id);
   const openingTotal = results.reduce((s, r) => s + r.opening, 0);
   const closingTotal = results.reduce((s, r) => s + r.closing, 0);
@@ -170,7 +177,7 @@ function Waterfall({ accounts, results }: { accounts: Account[]; results: Accoun
               <text x={cx} y={b.top - 6} textAnchor="middle"
                     fontSize="11" fontFamily="var(--font-mono)"
                     fill={b.s.kind === "total" ? "var(--ink)" : (b.s.value >= 0 ? "var(--positive)" : "var(--negative)")}>
-                {b.s.kind === "total" ? compact(b.s.value) : (b.s.value === 0 ? "" : compact(b.s.value))}
+                {b.s.kind === "total" ? compact(b.s.value, currency) : (b.s.value === 0 ? "" : compact(b.s.value, currency))}
               </text>
               <text x={cx} y={H - mB + 18} textAnchor="middle"
                     fontSize="10.5" fontFamily="var(--font-mono)" fill="var(--muted)"
@@ -337,10 +344,16 @@ export default async function Home({ searchParams }: {
   const weeklyList = (wkPeriods || []) as Period[];
   const monthlyList = (moPeriods || []) as Period[];
   const wkId = searchParams.wk || weeklyList[0]?.id;
-  const moId = searchParams.mo || monthlyList[0]?.id;
+  // Foreign board: "latest" (default) shows each account's most recent statement;
+  // a specific period id pins the old single-period view.
+  const moParam = searchParams.mo && searchParams.mo !== "latest" ? searchParams.mo : null;
+  const moPinned = moParam ? monthlyList.find((p) => p.id === moParam) : undefined;
   const wkPeriod = weeklyList.find((p) => p.id === wkId);
-  const moPeriod = monthlyList.find((p) => p.id === moId);
-  const periodIds = [wkId, moId].filter(Boolean) as string[];
+
+  // Fetch the selected weekly period + ALL monthly periods (so every foreign
+  // account can be shown at its own latest statement simultaneously).
+  const monthlyIds = monthlyList.map((p) => p.id);
+  const periodIds = [wkId, ...monthlyIds].filter(Boolean) as string[];
 
   const { data: balancesRaw } = await sb.from("balances").select("account_id, period_id, opening").in("period_id", periodIds);
   const { data: txnsRaw } = await sb.from("transactions")
@@ -378,7 +391,69 @@ export default async function Home({ searchParams }: {
   const moRange: DateRange = { from: searchParams.moFrom, to: searchParams.moTo };
 
   const ngnResults = computePeriod(openingsFor(wkId), txnsFor(wkId), transfersFor(wkId), wkRange);
-  const fxResults = computePeriod(openingsFor(moId), txnsFor(moId), transfersFor(moId), moRange);
+
+  // Foreign results
+  let fxResults: AccountPeriodResult[];
+  const fxSubById: Record<string, string> = {};
+  let fxBoardLabel: string;
+  let fxFilterPeriod: Period | undefined;
+
+  if (moPinned) {
+    // Pinned: classic single-period view.
+    fxResults = computePeriod(openingsFor(moPinned.id), txnsFor(moPinned.id), [], moRange);
+    fxBoardLabel = moPinned.label;
+    fxFilterPeriod = moPinned;
+  } else {
+    // Latest-per-account: each account uses its most recent period that holds
+    // its transactions; falls back to its most recent balances row.
+    // monthlyList is sorted by end_date desc.
+    const txnPeriodsByAcct = new Map<string, Set<string>>();
+    (txnsRaw || []).forEach((t: any) => {
+      if (!txnPeriodsByAcct.has(t.account_id)) txnPeriodsByAcct.set(t.account_id, new Set());
+      txnPeriodsByAcct.get(t.account_id)!.add(t.period_id);
+    });
+    const balPeriodsByAcct = new Map<string, Set<string>>();
+    (balancesRaw || []).forEach((b: any) => {
+      if (!balPeriodsByAcct.has(b.account_id)) balPeriodsByAcct.set(b.account_id, new Set());
+      balPeriodsByAcct.get(b.account_id)!.add(b.period_id);
+    });
+    const pickPeriod = (acctId: string): Period | undefined => {
+      const withTxns = txnPeriodsByAcct.get(acctId);
+      if (withTxns) {
+        const p = monthlyList.find((p) => withTxns.has(p.id));
+        if (p) return p;
+      }
+      const withBal = balPeriodsByAcct.get(acctId);
+      if (withBal) return monthlyList.find((p) => withBal.has(p.id));
+      return undefined;
+    };
+
+    fxResults = fxAccounts.map((a) => {
+      const p = pickPeriod(a.id);
+      if (!p) return computeAccountPeriod(a.id, 0, [], [], moRange);
+      fxSubById[a.id] = p.label;
+      const opening = openingsFor(p.id)[a.id] ?? 0;
+      return computeAccountPeriod(a.id, opening, txnsFor(p.id).filter((t) => t.accountId === a.id), [], moRange);
+    });
+    fxBoardLabel = "Latest statements";
+    // Date-filter bounds span all shown periods.
+    const shown = monthlyList.filter((p) => Object.values(fxSubById).includes(p.label));
+    if (shown.length) {
+      fxFilterPeriod = {
+        id: "latest", label: "Latest",
+        start_date: shown.map((p) => p.start_date).sort()[0],
+        end_date: shown.map((p) => p.end_date).sort().slice(-1)[0],
+      };
+    }
+  }
+
+  // Foreign waterfalls grouped by currency (never mix currencies in one chart).
+  const fxCurrencies = Array.from(new Set(fxAccounts.map((a) => a.currency)));
+  const fxByCurrency = fxCurrencies.map((cur) => {
+    const accts = fxAccounts.filter((a) => a.currency === cur);
+    const ids = new Set(accts.map((a) => a.id));
+    return { currency: cur, accounts: accts, results: fxResults.filter((r) => ids.has(r.accountId)) };
+  }).filter((g) => g.results.some((r) => r.opening !== 0 || r.closing !== 0));
 
   const showError = errors.length > 0 || (accounts.length === 0 && !accErr);
   if (accounts.length === 0 && !accErr) {
@@ -426,7 +501,7 @@ export default async function Home({ searchParams }: {
         periodControl={<PeriodSelect periods={weeklyList} current={wkId || ""} param="wk" />}
         dateFilter={<DateFilter period={wkPeriod} fromParam="wkFrom" toParam="wkTo"
                      fromVal={searchParams.wkFrom} toVal={searchParams.wkTo}
-                     preserve={{ wk: wkId, mo: moId, moFrom: searchParams.moFrom, moTo: searchParams.moTo }} />}
+                     preserve={{ wk: wkId, mo: searchParams.mo, moFrom: searchParams.moFrom, moTo: searchParams.moTo }} />}
         accounts={ngnAccounts} results={ngnResults} showTotal currency="NGN"
         sliceLabel={sliceLabelFor(searchParams.wkFrom, searchParams.wkTo, wkPeriod)} />
 
@@ -445,13 +520,23 @@ export default async function Home({ searchParams }: {
 
       <Board
         title="Foreign Monthly"
-        periodLabel={moPeriod?.label || "—"}
-        periodControl={<PeriodSelect periods={monthlyList} current={moId || ""} param="mo" />}
-        dateFilter={<DateFilter period={moPeriod} fromParam="moFrom" toParam="moTo"
+        periodLabel={fxBoardLabel}
+        periodControl={<PeriodSelect
+          periods={[{ id: "latest", label: "Latest per account" }, ...monthlyList]}
+          current={moParam || "latest"} param="mo" />}
+        dateFilter={<DateFilter period={fxFilterPeriod} fromParam="moFrom" toParam="moTo"
                      fromVal={searchParams.moFrom} toVal={searchParams.moTo}
-                     preserve={{ wk: wkId, mo: moId, wkFrom: searchParams.wkFrom, wkTo: searchParams.wkTo }} />}
+                     preserve={{ wk: wkId, mo: searchParams.mo, wkFrom: searchParams.wkFrom, wkTo: searchParams.wkTo }} />}
         accounts={fxAccounts} results={fxResults} showTotal={false}
-        sliceLabel={sliceLabelFor(searchParams.moFrom, searchParams.moTo, moPeriod)} />
+        subById={moPinned ? undefined : fxSubById}
+        sliceLabel={sliceLabelFor(searchParams.moFrom, searchParams.moTo, fxFilterPeriod)} />
+
+      {fxByCurrency.map((g) => (
+        <div key={g.currency}>
+          <div className="eyebrow chart-eyebrow">Cash movement ({g.currency})</div>
+          <Waterfall accounts={g.accounts} results={g.results} currency={g.currency} />
+        </div>
+      ))}
 
       <div className="eyebrow">Record activity manually</div>
       <div className="panels">
