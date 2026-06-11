@@ -2,6 +2,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { computePeriod, computeAccountPeriod, type Transaction, type Transfer, type AccountPeriodResult, type DateRange } from "@/lib/cashEngine";
 import { addTransaction, addTransfer } from "./actions";
 import { PeriodSelect } from "./PeriodSelect";
+import { fetchUsdRates, toUsd } from "@/lib/fxRates";
 
 export const dynamic = "force-dynamic";
 
@@ -455,6 +456,37 @@ export default async function Home({ searchParams }: {
     return { currency: cur, accounts: accts, results: fxResults.filter((r) => ids.has(r.accountId)) };
   }).filter((g) => g.results.some((r) => r.opening !== 0 || r.closing !== 0));
 
+  // --- Consolidated USD-equivalent view across ALL accounts (NGN + foreign) ---
+  // Converts each account's opening/closing using published USD rates.
+  // Renders only if the rates feed is available and every active currency is covered.
+  const usdRates = await fetchUsdRates();
+  let usdGroup: { accounts: Account[]; results: AccountPeriodResult[]; asOf: string; missing: string[];
+                  keyRates: { currency: string; perUsd: number }[] } | null = null;
+  if (usdRates) {
+    const allAccounts = [...ngnAccounts, ...fxAccounts];
+    const allResults = [...ngnResults, ...fxResults];
+    const missing = new Set<string>();
+    const convAccounts: Account[] = [];
+    const convResults: AccountPeriodResult[] = [];
+    for (const a of allAccounts) {
+      const r = allResults.find((x) => x.accountId === a.id);
+      if (!r) continue;
+      const o = toUsd(r.opening, a.currency, usdRates.rates);
+      const c = toUsd(r.closing, a.currency, usdRates.rates);
+      if (o === null || c === null) { missing.add(a.currency); continue; }
+      if (o === 0 && c === 0) continue; // skip empty accounts to keep the chart readable
+      convAccounts.push({ ...a, currency: "USD" });
+      convResults.push({ ...r, opening: o, closing: c });
+    }
+    if (convResults.length) {
+      // Surface the exact rates applied, for the caption.
+      const used = Array.from(new Set([...ngnAccounts, ...fxAccounts].map((a) => a.currency)))
+        .filter((c) => c !== "USD" && usdRates.rates[c]);
+      const keyRates = used.map((c) => ({ currency: c, perUsd: usdRates.rates[c] }));
+      usdGroup = { accounts: convAccounts, results: convResults, asOf: usdRates.asOf, missing: Array.from(missing), keyRates };
+    }
+  }
+
   const showError = errors.length > 0 || (accounts.length === 0 && !accErr);
   if (accounts.length === 0 && !accErr) {
     errors.push("Connected, but found 0 accounts. Likely causes: wrong project URL, anon key instead of service_role, or seed.sql didn't run.");
@@ -537,6 +569,20 @@ export default async function Home({ searchParams }: {
           <Waterfall accounts={g.accounts} results={g.results} currency={g.currency} />
         </div>
       ))}
+
+      {usdGroup ? (
+        <>
+          <div className="eyebrow chart-eyebrow">Consolidated cash movement — USD equivalent</div>
+          <div className="liquidity-note">
+            Rates applied ({usdGroup.asOf}): {usdGroup.keyRates.map((r) =>
+              `1 USD = ${SYM[r.currency] ?? r.currency + " "}${r.perUsd.toLocaleString("en-NG", { maximumFractionDigits: 2 })}`
+            ).join(" · ")}. Published market rates (indicative — may differ from CBN NFEM).
+            Native-currency boards above remain the source of truth.
+            {usdGroup.missing.length ? ` No rate available for: ${usdGroup.missing.join(", ")} (excluded).` : ""}
+          </div>
+          <Waterfall accounts={usdGroup.accounts} results={usdGroup.results} currency="USD" />
+        </>
+      ) : null}
 
       <div className="eyebrow">Record activity manually</div>
       <div className="panels">
