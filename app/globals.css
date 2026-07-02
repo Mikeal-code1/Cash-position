@@ -263,3 +263,27 @@ table.history td.detail { font-family: var(--font-body), serif; font-size: 13.5p
 .outcome-success { background: rgba(47, 107, 79, 0.12); color: var(--positive); }
 .outcome-failed  { background: rgba(164, 68, 47, 0.12); color: var(--negative); }
 .outcome-partial { background: rgba(154, 122, 51, 0.12); color: var(--brass); }
+
+/* --- Added: investments page (KPI cards, inline row forms) --- */
+.kpis {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 6px;
+}
+@media (max-width: 860px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+.kpi {
+  background: var(--paper-raised); border: 1px solid var(--line); border-radius: 4px;
+  padding: 14px 16px; box-shadow: var(--shadow);
+}
+.kpi-label {
+  font-family: var(--font-mono), monospace; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--muted); margin-bottom: 6px;
+}
+.kpi-value {
+  font-family: var(--font-display), serif; font-size: 21px; font-weight: 600;
+  font-variant-numeric: tabular-nums; color: var(--ink);
+}
+.row-form { display: flex; align-items: center; gap: 8px; }
+.row-form input[type="date"] {
+  font-family: var(--font-mono), monospace; font-size: 11px; color: var(--ink);
+  background: var(--paper); border: 1px solid var(--line-strong); border-radius: 3px; padding: 3px 6px;
+}
+.row-form .linkbtn { font-size: 11px; }

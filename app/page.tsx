@@ -518,6 +518,7 @@ export default async function Home({ searchParams }: {
         <div className="header-actions">
           <a className="linkbtn primary" href="/import">Import statement</a>
           <a className="linkbtn primary alt" href="/import/payments">Import payment requests</a>
+          <a className="linkbtn ghost" href="/investments">Investments</a>
           <a className="linkbtn ghost" href="/history">History</a>
           <form action="/api/logout" method="post"><button className="linkbtn" type="submit">Sign out</button></form>
         </div>
