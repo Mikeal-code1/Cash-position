@@ -46,19 +46,30 @@ function isoFromDMonY(s: string): string | null {
 
 // ---------- FSDH ----------
 function parseFSDH(text: string): ParsedStatement {
-  const range = text.match(/From:\s*(\d{1,2}\/\d{1,2}\/\d{4})\s*To:\s*(\d{1,2}\/\d{1,2}\/\d{4})/);
+  // The To date can carry a stray trailing marker (e.g. "To: 6/1/2026 2"),
+  // which some FSDH exports glue directly onto the closing balance
+  // ("6/1/2026 239,687.67"). Capture that marker so we can strip it.
+  const range = text.match(/From:\s*(\d{1,2}\/\d{1,2}\/\d{4})\s*To:\s*(\d{1,2}\/\d{1,2}\/\d{4})(?:\s+(\d+))?/);
   if (!range) throw new Error("FSDH statement: couldn't find the From/To date range.");
   const startDate = isoFromMDY(range[1])!;
   const endDate = isoFromMDY(range[2])!;
+  const endMarker = range[3] || "";
   const currency = (text.match(/Account Currency([A-Z]{3})/) || [])[1] || "";
   const accountNumber = (text.match(/Account No(\d+)/) || [])[1] || "";
   const customerName = (text.match(/Account Name([A-Z .'-]+)/) || [])[1]?.trim() || "";
 
-  const openM = text.match(/Opening Balance as at [\d/]+\s+([\d,]*\.\d{2})/);
+  const openM = text.match(/Opening Balance as at [\d/]+(?:\s+\d+)?\s+([\d,]*\.\d{2})/);
   const closeM = text.match(/Closing Balance as at [\d/]+\s+([\d,]*\.\d{2})/);
   if (!openM || !closeM) throw new Error("FSDH statement: couldn't find opening/closing balances.");
   const openingBalance = num(openM[1]);
-  const closingBalance = num(closeM[1]);
+
+  // Strip the stray marker if it's glued to the front of the closing balance.
+  let closeStr = closeM[1].replace(/,/g, "");
+  if (endMarker && closeStr.startsWith(endMarker) && closeStr.length > endMarker.length + 3) {
+    const stripped = closeStr.slice(endMarker.length);
+    if (/^\d+\.\d{2}$/.test(stripped)) closeStr = stripped;
+  }
+  const closingBalance = parseFloat(closeStr);
 
   // Tail of each txn: BookingDate + ValueDate + glued Debit/Credit/Balance.
   const tailRe = /(\d{1,2}\/\d{1,2}\/\d{2})(\d{1,2}\/\d{1,2}\/\d{2})((?:(?:\d[\d,]*)?\.\d{2}|0)+)$/;
@@ -114,7 +125,10 @@ function parseFAB(text: string): ParsedStatement {
   if (!range) throw new Error("FAB statement: couldn't find the From/To date range.");
   const startDate = isoFromDMonY(range[1])!;
   const endDate = isoFromDMonY(range[2])!;
-  const currency = (text.match(/:\s*([A-Z]{3})\s*\n/) || [])[1] || "AED";
+  const currency = (text.match(/:\s*([A-Z]{3})\s*\n/) || [])[1] || "";
+  if (!currency) {
+    throw new Error("FAB statement: couldn't detect the account currency from the header.");
+  }
   const accountNumber = (text.match(/Account Number\s*(\d+)/) || [])[1] || "";
 
   const lines = text.split("\n");
