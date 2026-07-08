@@ -9,6 +9,11 @@
 //   Optional recall date: placement liquidates early at value held-to-date,
 //   less a penalty % of accrued interest forfeited.
 
+export interface RateRevision {
+  effectiveDate: string;   // YYYY-MM-DD; rate applies from this date onward
+  annualRate: number;      // annual, e.g. 0.165
+}
+
 export interface Placement {
   id: string;
   entity: string;
@@ -18,6 +23,7 @@ export interface Placement {
   tenorMonths: number;      // may be fractional
   rateOverride: number | null; // annual, e.g. 0.18; null = use scenario rate
   recallDate: string | null;
+  revisions?: RateRevision[];  // optional dated rate changes over the lock-up
 }
 
 export interface InvestSettings {
@@ -32,7 +38,9 @@ export type PlacementStatus = "pending" | "active" | "matured";
 
 export interface PlacementResult {
   placement: Placement;
-  rateUsed: number;
+  rateUsed: number;          // base/original annual rate
+  currentRate: number;       // annual rate in effect at as-of (after revisions)
+  revisionCount: number;
   monthlyRate: number;
   maturityDate: string;      // start + tenor months (30-day convention)
   liquidationDate: string;   // recall date if earlier, else maturity
@@ -82,8 +90,41 @@ function whtFor(p: Placement, s: InvestSettings): number {
   return p.currency === "USD" ? s.usdWht : s.ngnWht;
 }
 
+// Build monthly-rate segments: base rate from month 0, plus each revision's
+// rate from its month-offset (actual days ÷ 30) onward.
+interface RateSegment { startMonth: number; monthlyRate: number; }
+function buildSegments(p: Placement, s: InvestSettings): RateSegment[] {
+  const base = rateFor(p, s) / 12;
+  const segs: RateSegment[] = [{ startMonth: 0, monthlyRate: base }];
+  for (const rev of p.revisions || []) {
+    const off = daysBetween(p.startDate, rev.effectiveDate) / 30;
+    if (off <= 0) segs[0].monthlyRate = rev.annualRate / 12; // effective at/before start
+    else segs.push({ startMonth: off, monthlyRate: rev.annualRate / 12 });
+  }
+  segs.sort((a, b) => a.startMonth - b.startMonth);
+  return segs;
+}
+function monthlyRateAt(segs: RateSegment[], offsetMonths: number): number {
+  let r = segs[0].monthlyRate;
+  for (const seg of segs) if (seg.startMonth <= offsetMonths + 1e-9) r = seg.monthlyRate;
+  return r;
+}
+// Growth over m months, compounding each whole month at the rate in effect at
+// that month's start, with simple interest on the fractional stub. Reduces to
+// growth(m, r) when there is a single segment.
+function growthSeg(m: number, segs: RateSegment[]): number {
+  if (m <= 0) return 1;
+  const whole = Math.floor(m);
+  const frac = m - whole;
+  let f = 1;
+  for (let k = 0; k < whole; k++) f *= 1 + monthlyRateAt(segs, k);
+  if (frac > 0) f *= 1 + monthlyRateAt(segs, whole) * frac;
+  return f;
+}
+
 export function computePlacement(p: Placement, s: InvestSettings, asOf: string): PlacementResult {
   const annual = rateFor(p, s);
+  const segs = buildSegments(p, s);
   const r = annual / 12;
   const whtRate = whtFor(p, s);
 
@@ -97,7 +138,7 @@ export function computePlacement(p: Placement, s: InvestSettings, asOf: string):
     p.tenorMonths,
   );
 
-  const realisedValue = p.principal * growth(heldMonths, r);
+  const realisedValue = p.principal * growthSeg(heldMonths, segs);
   let realisedInterest = realisedValue - p.principal;
   let penaltyForfeited = 0;
   if (recalled && s.penalty > 0) {
@@ -114,16 +155,20 @@ export function computePlacement(p: Placement, s: InvestSettings, asOf: string):
     Math.max(daysBetween(p.startDate, asOf), 0) / 30,
     heldMonths, // never accrue past liquidation
   );
-  const accruedGross = p.principal * (growth(elapsedMonths, r) - 1);
+  const accruedGross = p.principal * (growthSeg(elapsedMonths, segs) - 1);
   const accruedNet = accruedGross * (1 - whtRate);
   const currentValue = p.principal + accruedGross;
 
   const status: PlacementStatus =
     p.startDate > asOf ? "pending" : liquidationDate <= asOf ? "matured" : "active";
 
+  const currentRate = monthlyRateAt(segs, Math.max(elapsedMonths, 0)) * 12;
+
   return {
     placement: p,
     rateUsed: annual,
+    currentRate,
+    revisionCount: (p.revisions || []).length,
     monthlyRate: r,
     maturityDate,
     liquidationDate,
@@ -149,9 +194,9 @@ export function valueAt(p: Placement, s: InvestSettings, date: string): number {
   if (date < p.startDate) return 0;
   const res = computePlacement(p, s, date);
   if (date >= res.liquidationDate) return res.realisedValue;
-  const r = rateFor(p, s) / 12;
+  const segs = buildSegments(p, s);
   const m = Math.min(daysBetween(p.startDate, date) / 30, p.tenorMonths);
-  return round2(p.principal * growth(m, r));
+  return round2(p.principal * growthSeg(m, segs));
 }
 
 export interface PortfolioSummary {

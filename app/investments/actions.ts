@@ -75,3 +75,71 @@ export async function updateSettings(formData: FormData) {
   revalidatePath("/investments");
   redirect("/investments");
 }
+
+// --- Edit an existing placement's core fields (tenor, rate, principal, etc.) ---
+export async function editPlacement(formData: FormData) {
+  const id = String(formData.get("placement_id") || "");
+  if (!id) return;
+
+  const tenorMonths = Number(formData.get("tenor_months") || 0);
+  const principal = Number(formData.get("principal") || 0);
+  const startDate = String(formData.get("start_date") || "");
+  const rateOverrideRaw = String(formData.get("rate_override") || "").trim();
+
+  const patch: Record<string, any> = {};
+  if (tenorMonths > 0) patch.tenor_months = tenorMonths;
+  if (principal > 0) patch.principal = principal;
+  if (startDate) patch.start_date = startDate;
+  if (rateOverrideRaw === "") {
+    patch.rate_override = null; // revert to scenario rate
+  } else {
+    const pct = Number(rateOverrideRaw);
+    if (isNaN(pct) || pct <= 0 || pct > 100) {
+      redirect("/investments?error=" + encodeURIComponent("Base rate must be a percentage between 0 and 100."));
+    }
+    patch.rate_override = pct / 100;
+  }
+  if (Object.keys(patch).length === 0) return;
+
+  const sb = supabaseServer();
+  const { error } = await sb.from("placements").update(patch).eq("id", id);
+  if (error) redirect("/investments?error=" + encodeURIComponent("Edit failed: " + error.message));
+  revalidatePath("/investments");
+  redirect("/investments");
+}
+
+// --- Add a dated rate revision to a placement ---
+export async function addRevision(formData: FormData) {
+  const placementId = String(formData.get("placement_id") || "");
+  const effectiveDate = String(formData.get("effective_date") || "");
+  const rateRaw = String(formData.get("annual_rate") || "").trim();
+  const note = String(formData.get("note") || "").trim();
+
+  if (!placementId || !effectiveDate || rateRaw === "") {
+    redirect("/investments?error=" + encodeURIComponent("Revision needs a placement, effective date and rate."));
+  }
+  const pct = Number(rateRaw);
+  if (isNaN(pct) || pct < 0 || pct > 100) {
+    redirect("/investments?error=" + encodeURIComponent("Revision rate must be a percentage between 0 and 100."));
+  }
+
+  const sb = supabaseServer();
+  const { error } = await sb.from("placement_revisions").insert({
+    placement_id: placementId,
+    effective_date: effectiveDate,
+    annual_rate: pct / 100,
+    note: note || null,
+  });
+  if (error) redirect("/investments?error=" + encodeURIComponent("Add revision failed: " + error.message));
+  revalidatePath("/investments");
+  redirect("/investments");
+}
+
+export async function deleteRevision(formData: FormData) {
+  const id = String(formData.get("revision_id") || "");
+  if (!id) return;
+  const sb = supabaseServer();
+  await sb.from("placement_revisions").delete().eq("id", id);
+  revalidatePath("/investments");
+  redirect("/investments");
+}

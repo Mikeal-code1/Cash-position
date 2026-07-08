@@ -287,3 +287,28 @@ table.history td.detail { font-family: var(--font-body), serif; font-size: 13.5p
   background: var(--paper); border: 1px solid var(--line-strong); border-radius: 3px; padding: 3px 6px;
 }
 .row-form .linkbtn { font-size: 11px; }
+
+/* --- Added: investment placement management --- */
+.manage-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
+@media (max-width: 860px) { .manage-grid { grid-template-columns: 1fr; } }
+.manage-card h3 { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.manage-form { margin-bottom: 14px; }
+.revisions { border-top: 1px solid var(--line); padding-top: 12px; }
+.rev-title {
+  font-family: var(--font-mono), monospace; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--brass); margin-bottom: 8px;
+}
+.rev-list { list-style: none; margin: 0 0 10px; padding: 0; }
+.rev-list li {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  font-family: var(--font-mono), monospace; font-size: 12px; padding: 4px 0;
+  border-bottom: 1px dotted var(--line);
+}
+.rev-add { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.rev-add input[type="date"], .rev-add input[type="number"], .rev-add input[type="text"] {
+  font-family: var(--font-body), serif; font-size: 13px; color: var(--ink);
+  background: var(--paper); border: 1px solid var(--line-strong); border-radius: 3px; padding: 6px 8px;
+}
+.rev-add input[type="text"] { flex: 1; min-width: 90px; }
+.rev-add input[type="number"] { width: 84px; }
+button.submit.small-btn { padding: 7px 12px; font-size: 11px; margin-top: 0; }

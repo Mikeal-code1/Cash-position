@@ -3,7 +3,7 @@ import {
   computePlacement, summarise, monthlySeries,
   type Placement, type InvestSettings, type PlacementResult, type PortfolioSummary,
 } from "@/lib/investEngine";
-import { addPlacement, recordRecall, clearRecall, updateSettings } from "./actions";
+import { addPlacement, recordRecall, clearRecall, updateSettings, editPlacement, addRevision, deleteRevision } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -156,6 +156,8 @@ export default async function InvestmentsPage({ searchParams }: { searchParams: 
     .from("investment_settings").select("*").eq("id", 1).maybeSingle();
   const { data: placementsRaw, error: plErr } = await sb
     .from("placements").select("*").order("start_date");
+  const { data: revisionsRaw } = await sb
+    .from("placement_revisions").select("*").order("effective_date");
 
   if (setErr || plErr) {
     return (
@@ -185,12 +187,20 @@ export default async function InvestmentsPage({ searchParams }: { searchParams: 
   };
   const asOf = new Date().toISOString().slice(0, 10);
 
+  const revsByPlacement: Record<string, { id: string; effectiveDate: string; annualRate: number; note: string | null }[]> = {};
+  (revisionsRaw || []).forEach((rv: any) => {
+    (revsByPlacement[rv.placement_id] ||= []).push({
+      id: rv.id, effectiveDate: rv.effective_date, annualRate: Number(rv.annual_rate), note: rv.note,
+    });
+  });
+
   const placements: Placement[] = (placementsRaw || []).map((p: any) => ({
     id: p.id, entity: p.entity, currency: p.currency,
     startDate: p.start_date, principal: Number(p.principal),
     tenorMonths: Number(p.tenor_months),
     rateOverride: p.rate_override != null ? Number(p.rate_override) : null,
     recallDate: p.recall_date,
+    revisions: (revsByPlacement[p.id] || []).map((r) => ({ effectiveDate: r.effectiveDate, annualRate: r.annualRate })),
   }));
 
   const results = placements.map((p) => computePlacement(p, settings, asOf));
@@ -258,7 +268,12 @@ export default async function InvestmentsPage({ searchParams }: { searchParams: 
                     <td className="when">{r.placement.startDate}</td>
                     <td>{money(r.placement.principal, r.placement.currency)}</td>
                     <td>{r.placement.tenorMonths}m</td>
-                    <td>{pct(r.rateUsed)}{r.placement.rateOverride != null ? <div className="dim small">override</div> : null}</td>
+                    <td>
+                      {pct(r.currentRate)}
+                      {r.revisionCount > 0
+                        ? <div className="dim small">was {pct(r.rateUsed)} · {r.revisionCount} rev</div>
+                        : r.placement.rateOverride != null ? <div className="dim small">override</div> : null}
+                    </td>
                     <td className="when">{r.maturityDate}</td>
                     <td><span className={`outcome-tag outcome-${r.status === "active" ? "success" : r.status === "pending" ? "partial" : "failed"}`}>{r.status}</span></td>
                     <td>{money(r.accruedGross, r.placement.currency)}</td>
@@ -282,6 +297,65 @@ export default async function InvestmentsPage({ searchParams }: { searchParams: 
                 ))}
               </tbody>
             </table>
+          </div>
+
+          <div className="eyebrow chart-eyebrow">Manage each placement — rates &amp; tenor</div>
+          <div className="liquidity-note">
+            Edit a placement&apos;s tenor or base rate, or add a dated rate revision. Revisions
+            compound accurately: interest earns the prior rate up to the effective date, then the
+            new rate afterwards — reflecting money-market rate movements over the lock-up.
+          </div>
+          <div className="manage-grid">
+            {placements.map((p) => {
+              const revs = revsByPlacement[p.id] || [];
+              return (
+                <div className="panel manage-card" key={p.id}>
+                  <h3>{p.entity} <span className="dim small">{p.currency} · {money(p.principal, p.currency)}</span></h3>
+
+                  <form action={editPlacement} className="manage-form">
+                    <input type="hidden" name="placement_id" value={p.id} />
+                    <div className="row2">
+                      <div className="field"><label>Start date</label>
+                        <input name="start_date" type="date" defaultValue={p.startDate} /></div>
+                      <div className="field"><label>Tenor (months)</label>
+                        <input name="tenor_months" type="number" step="0.1" min="0.1" defaultValue={p.tenorMonths} /></div>
+                    </div>
+                    <div className="row2">
+                      <div className="field"><label>Base rate (% p.a., blank = scenario)</label>
+                        <input name="rate_override" type="number" step="0.01" min="0" max="100"
+                               defaultValue={p.rateOverride != null ? (p.rateOverride * 100).toFixed(2) : ""} placeholder="scenario" /></div>
+                      <div className="field"><label>Principal</label>
+                        <input name="principal" type="number" step="0.01" min="0" defaultValue={p.principal} /></div>
+                    </div>
+                    <button className="submit" type="submit">Save changes</button>
+                  </form>
+
+                  <div className="revisions">
+                    <div className="rev-title">Rate revisions</div>
+                    {revs.length === 0 ? <div className="dim small">None — base rate applies throughout.</div> : (
+                      <ul className="rev-list">
+                        {revs.map((rv) => (
+                          <li key={rv.id}>
+                            <span>{rv.effectiveDate} → <strong>{pct(rv.annualRate)}</strong>{rv.note ? ` · ${rv.note}` : ""}</span>
+                            <form action={deleteRevision} className="row-form">
+                              <input type="hidden" name="revision_id" value={rv.id} />
+                              <button className="linkbtn" type="submit">remove</button>
+                            </form>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <form action={addRevision} className="rev-add">
+                      <input type="hidden" name="placement_id" value={p.id} />
+                      <input name="effective_date" type="date" required aria-label="Effective date" />
+                      <input name="annual_rate" type="number" step="0.01" min="0" max="100" placeholder="rate %" required aria-label="New rate" />
+                      <input name="note" type="text" placeholder="note (optional)" aria-label="Note" />
+                      <button className="submit small-btn" type="submit">Add revision</button>
+                    </form>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </>
       ) : null}
