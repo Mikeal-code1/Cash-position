@@ -100,8 +100,15 @@ export function parseStatement(buf: ArrayBuffer | Buffer): ParsedStatement {
     const description = String(r[2] ?? "").replace(/\s+/g, " ").trim();
     const debit = toNum(r[3]);
     const credit = toNum(r[4]);
-    if (credit && credit > 0) transactions.push({ date, description, direction: "inflow", amount: credit });
-    else if (debit && debit > 0) transactions.push({ date, description, direction: "outflow", amount: debit });
+    // Use the NET movement (credit − debit) so reversal entries booked as a
+    // negative debit (or negative credit) are handled correctly: a negative
+    // debit is money coming back, i.e. an inflow. For ordinary rows — a single
+    // positive debit OR a single positive credit — this is identical to reading
+    // the columns separately.
+    const net = Math.round(((credit || 0) - (debit || 0) + Number.EPSILON) * 100) / 100;
+    if (net > 0) transactions.push({ date, description, direction: "inflow", amount: net });
+    else if (net < 0) transactions.push({ date, description, direction: "outflow", amount: -net });
+    // net === 0 → no balance movement, skip
   }
 
   const openingBalance = toNum(hdr["OPENING BAL"]) ?? 0;
