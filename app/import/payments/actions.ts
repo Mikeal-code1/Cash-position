@@ -112,5 +112,5 @@ export async function importPaymentRequests(formData: FormData) {
     pr_matched: String(totalMatched),
   });
   if (unmappedStr) params.set("pr_unmapped", unmappedStr);
-  redirect("/?" + params.toString());
+  redirect("/liquidity?" + params.toString());
 }

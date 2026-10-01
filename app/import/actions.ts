@@ -192,9 +192,9 @@ export async function importStatement(formData: FormData) {
   revalidatePath("/");
   // NGN imports pin the statement's period; foreign imports land on the
   // default latest-per-account view so all accounts stay visible together.
-  const pin = acct!.cadence === "weekly" ? `wk=${periodId}&` : "";
+  const dest = acct!.cadence === "weekly" ? `/ngn?wk=${periodId}&` : "/foreign?";
   redirect(
-    `/?${pin}imported=${encodeURIComponent(acct!.label)}&count=${parsed.transactions.length}${
+    `${dest}imported=${encodeURIComponent(acct!.label)}&count=${parsed.transactions.length}${
       createdNewPeriod ? "&new=1" : ""
     }`,
   );

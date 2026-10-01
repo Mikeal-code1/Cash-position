@@ -43,7 +43,8 @@ export async function addTransaction(formData: FormData) {
     status: "confirmed",
   });
 
-  revalidatePath("/");
+  revalidatePath("/", "layout");
+  redirect("/record?ok=transaction#transaction");
 }
 
 // Insert an inter-company transfer (NGN weekly board).
@@ -90,7 +91,8 @@ export async function addTransfer(formData: FormData) {
     amount,
   });
 
-  revalidatePath("/");
+  revalidatePath("/", "layout");
+  redirect("/record?ok=transfer#transfer");
 }
 
 // --- Manual balance update (temporary fix for accounts without statements) ---
@@ -104,7 +106,7 @@ export async function updateBalance(formData: FormData) {
   const raw = String(formData.get("balance") ?? "").replace(/,/g, "").trim();
   const balance = Number(raw);
   const back = (msg: string) =>
-    redirect(`/?${periodIdIn ? `wk=${periodIdIn}&` : ""}bal_error=${encodeURIComponent(msg)}`);
+    redirect(`/record?${periodIdIn ? `wk=${periodIdIn}&` : ""}bal_error=${encodeURIComponent(msg)}#balance`);
 
   if (!accountId || raw === "" || isNaN(balance)) back("Choose an account and enter a valid balance.");
 
@@ -154,6 +156,6 @@ export async function updateBalance(formData: FormData) {
     });
   } catch { /* ignore */ }
 
-  revalidatePath("/");
-  redirect(`/?wk=${periodId}&bal_ok=${encodeURIComponent(acct!.label)}`);
+  revalidatePath("/", "layout");
+  redirect(`/ngn?wk=${periodId}&bal_ok=${encodeURIComponent(acct!.label)}`);
 }

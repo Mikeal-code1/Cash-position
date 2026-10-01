@@ -362,7 +362,7 @@ export default async function InvestmentsPage({ searchParams }: { searchParams: 
 
       <div className="eyebrow chart-eyebrow">Manage</div>
       <div className="panels">
-        <div className="panel">
+        <div className="panel" id="add-placement">
           <h3>Add placement</h3>
           <form action={addPlacement}>
             <div className="field"><label htmlFor="p-entity">Entity / bucket</label>
