@@ -67,6 +67,22 @@ export async function importStatement(formData: FormData) {
       accountId);
   }
 
+  // Account-number guard: where the account has a stored account number and the
+  // statement carries one, they must match (several companies hold more than
+  // one FSDH account). Separate, tolerant query so imports behave exactly as
+  // before if the account_no column hasn't been added yet.
+  {
+    const { data: accNoRow, error: accNoErr } = await sb
+      .from("accounts").select("account_no").eq("id", accountId).maybeSingle();
+    const stored = !accNoErr ? String((accNoRow as any)?.account_no ?? "").replace(/\D/g, "") : "";
+    const onStatement = String(parsed.accountNumber ?? "").replace(/\D/g, "");
+    if (stored && onStatement && stored !== onStatement) {
+      await failImport(sb, filename, fileSize,
+        `Account mismatch: this statement is for account ${onStatement}, but the selected account (${acct!.label}) is ${stored}. Pick the matching account and re-upload.`,
+        accountId);
+    }
+  }
+
   // Find or create the period
   const { data: existing } = await sb
     .from("periods").select("id").eq("cadence", acct!.cadence)

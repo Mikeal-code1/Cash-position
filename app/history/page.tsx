@@ -4,7 +4,7 @@ export const dynamic = "force-dynamic";
 
 type Run = {
   id: string;
-  kind: "bank_statement" | "payment_request";
+  kind: "bank_statement" | "payment_request" | "manual_balance";
   original_filename: string;
   file_size_bytes: number | null;
   account_id: string | null;
@@ -113,8 +113,8 @@ export default async function HistoryPage() {
                 <tr key={r.id}>
                   <td className="when">{whenFmt(r.created_at)}</td>
                   <td>
-                    <span className={`kind-tag kind-${r.kind === "bank_statement" ? "stmt" : "pr"}`}>
-                      {r.kind === "bank_statement" ? "Statement" : "Payment request"}
+                    <span className={`kind-tag kind-${r.kind === "bank_statement" ? "stmt" : r.kind === "manual_balance" ? "manual" : "pr"}`}>
+                      {r.kind === "bank_statement" ? "Statement" : r.kind === "manual_balance" ? "Manual balance" : "Payment request"}
                     </span>
                   </td>
                   <td className="filename">
@@ -128,7 +128,11 @@ export default async function HistoryPage() {
                     ) : null}
                   </td>
                   <td className="detail">
-                    {r.kind === "bank_statement" ? (
+                    {r.kind === "manual_balance" ? (
+                      <div>
+                        {r.opening_balance != null ? `${money(r.opening_balance)} → ` : ""}{money(r.closing_balance)}
+                      </div>
+                    ) : r.kind === "bank_statement" ? (
                       <>
                         {r.txn_count != null ? <div>{r.txn_count} txns</div> : null}
                         {r.opening_balance != null ? (

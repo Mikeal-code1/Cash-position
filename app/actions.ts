@@ -2,6 +2,7 @@
 
 import { supabaseServer } from "@/lib/supabaseServer";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 
 // Insert a single transaction. Manual entries are trusted, so status = confirmed
 // (extraction will later insert as pending_review for the review step instead).
@@ -90,4 +91,69 @@ export async function addTransfer(formData: FormData) {
   });
 
   revalidatePath("/");
+}
+
+// --- Manual balance update (temporary fix for accounts without statements) ---
+// Sets an NGN account's balance for a weekly period. Refuses where the account
+// already has imported statement transactions in that period, so bank
+// statements remain the source of truth. Every update is logged to History.
+export async function updateBalance(formData: FormData) {
+  const accountId = String(formData.get("account_id") || "");
+  const periodIdIn = String(formData.get("period_id") || "");
+  const asAt = String(formData.get("as_at") || "");
+  const raw = String(formData.get("balance") ?? "").replace(/,/g, "").trim();
+  const balance = Number(raw);
+  const back = (msg: string) =>
+    redirect(`/?${periodIdIn ? `wk=${periodIdIn}&` : ""}bal_error=${encodeURIComponent(msg)}`);
+
+  if (!accountId || raw === "" || isNaN(balance)) back("Choose an account and enter a valid balance.");
+
+  const sb = supabaseServer();
+  const { data: acct } = await sb
+    .from("accounts").select("id, label, cadence").eq("id", accountId).single();
+  if (!acct || acct.cadence !== "weekly") back("Manual balance updates apply to NGN accounts only.");
+
+  // Target period: the one being viewed, else the latest weekly period.
+  let periodId = periodIdIn;
+  if (!periodId) {
+    const { data: latest } = await sb.from("periods").select("id").eq("cadence", "weekly")
+      .order("end_date", { ascending: false }).order("start_date", { ascending: false })
+      .limit(1).maybeSingle();
+    periodId = latest?.id || "";
+  }
+  if (!periodId) back("No NGN weekly period exists yet. Import a statement first.");
+
+  // Protect statement-backed balances.
+  const { count } = await sb.from("transactions").select("id", { count: "exact", head: true })
+    .eq("account_id", accountId).eq("period_id", periodId);
+  if (count && count > 0) {
+    back(`${acct!.label} already has ${count} imported statement transactions this week. Import a newer statement instead of overriding it manually.`);
+  }
+
+  const { data: prior } = await sb.from("balances").select("opening")
+    .eq("account_id", accountId).eq("period_id", periodId).maybeSingle();
+
+  const { error } = await sb.from("balances").upsert(
+    { account_id: accountId, period_id: periodId, opening: balance },
+    { onConflict: "account_id,period_id" },
+  );
+  if (error) back("Update failed: " + error.message);
+
+  // Audit trail (never blocks the update if logging isn't available).
+  try {
+    await sb.from("import_runs").insert({
+      kind: "manual_balance",
+      original_filename: "(manual entry)",
+      account_id: accountId,
+      period_id: periodId,
+      statement_end: asAt || null,
+      opening_balance: prior ? Number(prior.opening) : null,
+      closing_balance: balance,
+      outcome: "success",
+      notes: `Manual balance update${asAt ? ` as at ${asAt}` : ""}.`,
+    });
+  } catch { /* ignore */ }
+
+  revalidatePath("/");
+  redirect(`/?wk=${periodId}&bal_ok=${encodeURIComponent(acct!.label)}`);
 }

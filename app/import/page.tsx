@@ -3,13 +3,13 @@ import { importStatement } from "./actions";
 
 export const dynamic = "force-dynamic";
 
-type Account = { id: string; label: string; cadence: "weekly" | "monthly"; currency: string };
+type Account = { id: string; label: string; cadence: "weekly" | "monthly"; currency: string; account_no?: string | null };
 
 export default async function ImportPage({ searchParams }: { searchParams: { error?: string } }) {
   const sb = supabaseServer();
   const { data: accountsRaw } = await sb
     .from("accounts")
-    .select("id, label, cadence, currency")
+    .select("*")
     .eq("is_active", true)
     .order("cadence")
     .order("label");
@@ -42,12 +42,12 @@ export default async function ImportPage({ searchParams }: { searchParams: { err
               <option value="" disabled>Choose an account…</option>
               <optgroup label="NGN — weekly board">
                 {ngn.map((a) => (
-                  <option key={a.id} value={a.id}>{a.label} ({a.currency})</option>
+                  <option key={a.id} value={a.id}>{a.label} ({a.currency}){a.account_no && !a.label.includes(a.account_no) ? ` · ${a.account_no}` : ""}</option>
                 ))}
               </optgroup>
               <optgroup label="Foreign — monthly board">
                 {foreign.map((a) => (
-                  <option key={a.id} value={a.id}>{a.label} ({a.currency})</option>
+                  <option key={a.id} value={a.id}>{a.label} ({a.currency}){a.account_no && !a.label.includes(a.account_no) ? ` · ${a.account_no}` : ""}</option>
                 ))}
               </optgroup>
             </select>

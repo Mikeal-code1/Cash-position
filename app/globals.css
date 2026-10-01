@@ -312,3 +312,6 @@ table.history td.detail { font-family: var(--font-body), serif; font-size: 13.5p
 .rev-add input[type="text"] { flex: 1; min-width: 90px; }
 .rev-add input[type="number"] { width: 84px; }
 button.submit.small-btn { padding: 7px 12px; font-size: 11px; margin-top: 0; }
+
+/* --- Added: manual balance tag in History --- */
+.kind-manual { background: rgba(29, 26, 21, 0.08); color: var(--ink); }

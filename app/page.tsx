@@ -1,6 +1,6 @@
 import { supabaseServer } from "@/lib/supabaseServer";
 import { computePeriod, computeAccountPeriod, type Transaction, type Transfer, type AccountPeriodResult, type DateRange } from "@/lib/cashEngine";
-import { addTransaction, addTransfer } from "./actions";
+import { addTransaction, addTransfer, updateBalance } from "./actions";
 import { PeriodSelect } from "./PeriodSelect";
 import { fetchUsdRates, toUsd } from "@/lib/fxRates";
 
@@ -320,7 +320,8 @@ function sliceLabelFor(from?: string, to?: string, period?: Period): string | un
 export default async function Home({ searchParams }: {
   searchParams: { wk?: string; mo?: string; wkFrom?: string; wkTo?: string; moFrom?: string; moTo?: string;
                   imported?: string; count?: string; new?: string;
-                  pr_inserted?: string; pr_duped?: string; pr_matched?: string; pr_unmapped?: string };
+                  pr_inserted?: string; pr_duped?: string; pr_matched?: string; pr_unmapped?: string;
+                  bal_ok?: string; bal_error?: string };
 }) {
   let sb;
   try { sb = supabaseServer(); }
@@ -392,6 +393,25 @@ export default async function Home({ searchParams }: {
   const moRange: DateRange = { from: searchParams.moFrom, to: searchParams.moTo };
 
   const ngnResults = computePeriod(openingsFor(wkId), txnsFor(wkId), transfersFor(wkId), wkRange);
+
+  // Tag NGN rows whose balance this week was keyed in manually (not from a statement).
+  const ngnManualSub: Record<string, string> = {};
+  if (wkId) {
+    try {
+      const { data: manualRuns, error: manualErr } = await sb.from("import_runs")
+        .select("account_id, statement_end, created_at")
+        .eq("kind", "manual_balance").eq("period_id", wkId)
+        .order("created_at", { ascending: false });
+      if (!manualErr) {
+        const withTxns = new Set((txnsRaw || []).filter((t: any) => t.period_id === wkId).map((t: any) => t.account_id));
+        (manualRuns || []).forEach((m: any) => {
+          if (!m.account_id || ngnManualSub[m.account_id] || withTxns.has(m.account_id)) return;
+          const d = m.statement_end || String(m.created_at).slice(0, 10);
+          ngnManualSub[m.account_id] = `manual · as at ${d}`;
+        });
+      }
+    } catch { /* audit table or kind not available yet */ }
+  }
 
   // Foreign results
   let fxResults: AccountPeriodResult[];
@@ -527,6 +547,18 @@ export default async function Home({ searchParams }: {
       {showError ? <ErrorBanner messages={errors} /> : null}
       {importedMsg}
       {prImportMsg}
+      {searchParams.bal_ok ? (
+        <div className="banner success">
+          <strong>Balance updated — {decodeURIComponent(searchParams.bal_ok)}.</strong>
+          <div className="banner-hint">Logged in History as a manual balance update.</div>
+        </div>
+      ) : null}
+      {searchParams.bal_error ? (
+        <div className="banner">
+          <strong>Balance not updated</strong>
+          <ul><li>{decodeURIComponent(searchParams.bal_error)}</li></ul>
+        </div>
+      ) : null}
 
       <Board
         title="NGN Weekly"
@@ -536,6 +568,7 @@ export default async function Home({ searchParams }: {
                      fromVal={searchParams.wkFrom} toVal={searchParams.wkTo}
                      preserve={{ wk: wkId, mo: searchParams.mo, moFrom: searchParams.moFrom, moTo: searchParams.moTo }} />}
         accounts={ngnAccounts} results={ngnResults} showTotal currency="NGN"
+        subById={ngnManualSub}
         sliceLabel={sliceLabelFor(searchParams.wkFrom, searchParams.wkTo, wkPeriod)} />
 
       {ngnAccounts.length > 0 ? (
@@ -587,6 +620,30 @@ export default async function Home({ searchParams }: {
 
       <div className="eyebrow">Record activity manually</div>
       <div className="panels">
+        <div className="panel">
+          <h3>Update balance (manual)</h3>
+          <form action={updateBalance}>
+            <input type="hidden" name="period_id" value={wkId || ""} />
+            <div className="field">
+              <label htmlFor="b-acct">NGN account</label>
+              <select id="b-acct" name="account_id" required defaultValue="">
+                <option value="" disabled>Choose an account…</option>
+                {ngnAccounts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+              </select>
+            </div>
+            <div className="row2">
+              <div className="field"><label htmlFor="b-asat">Balance as at</label>
+                <input id="b-asat" name="as_at" type="date" required /></div>
+              <div className="field"><label htmlFor="b-bal">Balance (NGN)</label>
+                <input id="b-bal" name="balance" type="number" step="0.01" required /></div>
+            </div>
+            <button className="submit" type="submit">Update balance</button>
+            <p className="dim small" style={{ marginTop: 10 }}>
+              Applies to {wkPeriod?.label || "the latest week"}. Temporary fix for accounts without
+              statements — accounts with an imported statement this week can&apos;t be overridden.
+            </p>
+          </form>
+        </div>
         <div className="panel">
           <h3>Add transaction</h3>
           <form action={addTransaction}>
