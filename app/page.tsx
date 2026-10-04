@@ -2,6 +2,8 @@ import { loadDashboard, ENTITY_SHORT } from "@/lib/dashboardData";
 import { compact, signedCompact, f2, signedMoney, moveClass } from "@/lib/format";
 import { AppShell, Bridge, DataErrors, ResultBanners, Banner, type Step } from "./ui";
 import { PeriodSelect } from "./PeriodSelect";
+import { supabaseServer } from "@/lib/supabaseServer";
+import { loadInvestmentTotals } from "@/lib/investmentTotals";
 
 export const dynamic = "force-dynamic";
 
@@ -51,12 +53,64 @@ export default async function Overview({ searchParams }: { searchParams: SP }) {
 
   const maxClose = Math.max(...d.groups.map((g) => g.closing), 1);
 
+  // ---------- Total holdings (₦) ----------
+  const asOfToday = new Date().toISOString().slice(0, 10);
+  const inv = await loadInvestmentTotals(supabaseServer(), asOfToday);
+  const perUsd: Record<string, number> = { USD: 1 };
+  (d.rates?.list || []).forEach((r) => { perUsd[r.currency] = r.perUsd; });
+  const toNgn = (amt: number, c: string): number | null =>
+    c === "NGN" ? amt : perUsd[c] && perUsd.NGN ? (amt / perUsd[c]) * perUsd.NGN : null;
+  const excluded: string[] = [];
+  const cashNgn = n.closing;
+  let fxNgn = 0;
+  d.ccyAgg.forEach((c) => { const v = toNgn(c.closing, c.currency); if (v === null) excluded.push(`${c.currency} cash (no rate)`); else fxNgn += v; });
+  let mmNgn = 0, mmCount = 0;
+  (inv.moneyMarket?.byCurrency || []).forEach((m) => { const v = toNgn(m.value, m.currency); mmCount += m.count;
+    if (v === null) excluded.push(`${m.currency} placements (no rate)`); else mmNgn += v; });
+  const fundLines = (inv.funds || []).map((f) => ({ name: f.name, ngn: toNgn(f.value, f.currency) }));
+  fundLines.forEach((f) => { if (f.ngn === null) excluded.push(`${f.name} (no rate)`); });
+  const fundNgn = fundLines.reduce((s2, f) => s2 + (f.ngn ?? 0), 0);
+  inv.notes.forEach((x) => excluded.push(x));
+  const cashTotal = cashNgn + fxNgn, invTotal = mmNgn + fundNgn, grand = cashTotal + invTotal;
+  const share = (x: number) => (grand > 0 ? (x / grand) * 100 : 0);
+  const N2 = (x: number) => "₦" + f2(x);
+
   return (
     <AppShell active="overview" title="Overview"
       sub={`NGN ${d.wkPeriod?.label ?? "—"} · foreign at latest statement`}
       actions={<PeriodSelect periods={d.weeklyList} current={d.wkId || ""} param="wk" label="NGN week" />}>
       <DataErrors errors={d.errors} />
       <ResultBanners sp={searchParams} />
+
+      <section className="card totals" aria-label="Total holdings">
+        <div className="totals-head">
+          <div className="hero-main">
+            <span className="lbl">Total holdings · naira</span>
+            <span className="num hero-figure">{N2(grand)}</span>
+            <span className="hero-delta">Cash at latest statements · investments valued at {asOfToday}{perUsd.NGN ? ` · foreign converted at 1 USD = ₦${f2(perUsd.NGN)}` : ""}</span>
+          </div>
+          <div className="totals-bar" role="img" aria-label={`Cash ${share(cashTotal).toFixed(1)}%, investments ${share(invTotal).toFixed(1)}%`}>
+            <span className="tb-cash" style={{ width: `${share(cashTotal)}%` }} />
+            <span className="tb-inv" style={{ width: `${share(invTotal)}%` }} />
+          </div>
+        </div>
+        <div className="totals-cols">
+          <div className="totals-col">
+            <div className="totals-col-head"><span><i className="sw cash" />Cash</span><span className="num">{N2(cashTotal)}</span><span className="num muted small">{share(cashTotal).toFixed(1)}%</span></div>
+            <div className="totals-line"><span>Naira accounts</span><span className="num">{N2(cashNgn)}</span></div>
+            <div className="totals-line"><span>Foreign accounts <span className="muted small">{d.ccyAgg.map((c) => c.currency).join(" · ")}</span></span><span className="num">{N2(fxNgn)}</span></div>
+          </div>
+          <div className="totals-col">
+            <div className="totals-col-head"><span><i className="sw inv" />Investments</span><span className="num">{N2(invTotal)}</span><span className="num muted small">{share(invTotal).toFixed(1)}%</span></div>
+            <div className="totals-line"><span>Money market <span className="muted small">{mmCount} active placement{mmCount === 1 ? "" : "s"}</span></span><span className="num">{N2(mmNgn)}</span></div>
+            {fundLines.map((f) => (
+              <div className="totals-line" key={f.name}><span>{f.name}</span><span className="num">{f.ngn === null ? "—" : N2(f.ngn)}</span></div>
+            ))}
+            <a href="/investments" className="text-link">Open Investments →</a>
+          </div>
+        </div>
+        {excluded.length ? <p className="muted small" style={{ margin: 0 }}>Not included: {excluded.join("; ")}.</p> : null}
+      </section>
 
       <section className="card hero" aria-label="Group cash">
         <div className="hero-main">

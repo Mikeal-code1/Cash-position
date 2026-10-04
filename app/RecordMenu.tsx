@@ -9,6 +9,7 @@ const GROUPS: { title: string; items: [string, string][] }[] = [
     ["Add transaction", "/record#transaction"],
     ["Inter-company transfer", "/record#transfer"],
     ["New investment placement", "/investments#add-placement"],
+    ["Mutual fund withdrawal", "/investments/fund#withdraw"],
   ] },
 ];
 
