@@ -55,11 +55,13 @@ function parseFSDH(text: string): ParsedStatement {
   const endDate = isoFromMDY(range[2])!;
   const endMarker = range[3] || "";
   const currency = (text.match(/Account Currency([A-Z]{3})/) || [])[1] || "";
-  const accountNumber = (text.match(/Account No(\d+)/) || [])[1] || "";
+  const accountNumber = (text.match(/Account N(?:o|umber)\s*(\d+)/) || [])[1] || "";
   const customerName = (text.match(/Account Name([A-Z .'-]+)/) || [])[1]?.trim() || "";
 
-  const openM = text.match(/Opening Balance as at [\d/]+(?:\s+\d+)?\s+([\d,]*\.\d{2})/);
-  const closeM = text.match(/Closing Balance as at [\d/]+\s+([\d,]*\.\d{2})/);
+  // The date is matched with a 4-digit year so it still separates from the amount when
+  // newer FSDH exports print them with no space ("as at 10/1/202618,631.99").
+  const openM = text.match(/Opening Balance as at \d{1,2}\/\d{1,2}\/\d{4}(?:\s+\d+(?=\s))?\s*([\d,]*\.\d{2})/);
+  const closeM = text.match(/Closing Balance as at \d{1,2}\/\d{1,2}\/\d{4}\s*([\d,]*\.\d{2})/);
   if (!openM || !closeM) throw new Error("FSDH statement: couldn't find opening/closing balances.");
   const openingBalance = num(openM[1]);
 
@@ -102,7 +104,7 @@ function parseFSDH(text: string): ParsedStatement {
       lastBal = balance;
       desc = [];
     } else {
-      if (/^(Customer Statement|Account No|Account Name|Account Currency|Address|S\/N|Opening Balance|Closing Balance|Available Balance|Blocked Balance|PND|Dormancy|OD Limit|Last Transaction|\d+$)/.test(line)) {
+      if (/^(Customer Statement|Account N|Account Name|Account Currency|Address|Mailing Address|S\/N|Opening Balance|Closing Balance|Available Balance|Blocked Balance|PND|Dormancy|OD Limit|Last Transaction|\d+$)/.test(line)) {
         desc = [];
         continue;
       }
