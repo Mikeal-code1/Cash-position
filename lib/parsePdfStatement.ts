@@ -205,11 +205,82 @@ function parseFAB(text: string): ParsedStatement {
   };
 }
 
+
+// ---------- FSDH "STATEMENT OF ACCOUNT" (corporate layout, from Oct 2026) ----------
+// Header table: CUSTOMER NAME, START/END DATE (01-OCT-2026), ACCOUNT NUMBER,
+// OPENING/CLOSING BALANCE, CURRENCY. Rows: TXN DATE · VAL DATE · REMARKS ·
+// DEBIT · CREDIT · BALANCE, with the amount and balance glued together
+// ("FUNDING30,000.00279,711.44"). Each transaction is taken from the change in
+// running balance, so a row the PDF repeats across a page break (same balance
+// twice) shows zero movement and is skipped rather than double-counted.
+function isoFromDMonY2(d: string, mon: string, y: string): string | null {
+  const mm = MONTHS[mon[0].toUpperCase() + mon.slice(1, 3).toLowerCase()];
+  return mm ? `${y}-${mm}-${d.padStart(2, "0")}` : null;
+}
+function parseFSDHv2(text: string): ParsedStatement {
+  const DATE = /(\d{1,2})-\s*([A-Za-z]{3})-?\s*(\d{4})/;
+  const sd = text.match(new RegExp("START\\s*DATE\\s*" + DATE.source));
+  const ed = text.match(new RegExp("END\\s*DATE\\s*" + DATE.source));
+  if (!sd || !ed) throw new Error("FSDH statement: couldn't find the start/end dates.");
+  const startDate = isoFromDMonY2(sd[1], sd[2], sd[3])!;
+  const endDate = isoFromDMonY2(ed[1], ed[2], ed[3])!;
+  const openM = text.match(/OPENING\s*BALANCE\s*(-?[\d,]*\.\d{2})/);
+  const closeM = text.match(/CLOSING\s*BALANCE\s*(-?[\d,]*\.\d{2})/);
+  if (!openM || !closeM) throw new Error("FSDH statement: couldn't find opening/closing balances.");
+  const openingBalance = num(openM[1]);
+  const closingBalance = num(closeM[1]);
+  const currency = (text.match(/CURRENCY\s*([A-Z]{3})/) || [])[1] || "";
+  const accountNumber = (text.match(/ACCOUNT\s*NUMBER\s*(\d+)/) || [])[1] || "";
+  const customerName = ((text.match(/CUSTOMER\s*NAME\s*([^\n]+)/) || [])[1] || "").trim();
+
+  const hdr = text.indexOf("REMARKS");
+  const bal = hdr >= 0 ? text.indexOf("BALANCE", hdr) : -1;
+  const end = text.indexOf("TOTAL DEBIT", bal);
+  if (bal < 0) throw new Error("FSDH statement: couldn't find the transaction table.");
+  const body = text.slice(bal + "BALANCE".length, end > 0 ? end : undefined);
+
+  // A row ends with: amount immediately followed by balance (each exactly 2 dp).
+  const PAIR = /((?:\d{1,3}(?:,\d{3})*)?\.\d{2})(-?(?:\d{1,3}(?:,\d{3})*)?\.\d{2})\s*$/;
+  const DATE_G = new RegExp(DATE.source, "g");
+  const transactions: ParsedTxn[] = [];
+  let prevBal = openingBalance, lastBal = openingBalance;
+  let buf: string[] = [];
+  let curDate: string | null = null;
+  for (const raw of body.split("\n")) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim()) continue;
+    const m = line.match(PAIR);
+    if (!m) { buf.push(line); continue; }
+    const chunk = [...buf, line.slice(0, m.index)].join("\n");
+    let dm: RegExpExecArray | null; DATE_G.lastIndex = 0;
+    while ((dm = DATE_G.exec(chunk))) curDate = isoFromDMonY2(dm[1], dm[2], dm[3]) ?? curDate;
+    const balance = num(m[2]);
+    const delta = round2(balance - prevBal);
+    if (Math.abs(delta) >= 0.005 && curDate) {
+      const description = chunk.replace(DATE_G, " ")
+        .replace(/(^|\s)(\d{1,2}-\s*)?[A-Za-z]{3}-\s*(?=\s|$)/g, " ")  // partial dates left by page breaks
+        .replace(/\s+/g, " ").trim();
+      transactions.push({ date: curDate, description, direction: delta > 0 ? "inflow" : "outflow", amount: Math.abs(delta) });
+      prevBal = balance;
+    }
+    lastBal = balance;
+    buf = [];
+  }
+
+  const derivedClosing = round2(lastBal);
+  return {
+    customerName, currency, accountNumber, startDate, endDate,
+    openingBalance, closingBalance, transactions, derivedClosing,
+    reconciled: Math.abs(derivedClosing - closingBalance) < 0.01,
+  };
+}
+
 export async function parsePdfStatement(buf: Buffer): Promise<ParsedStatement> {
   const { text } = await pdfParse(buf);
   if (/Customer Statement of Account/i.test(text)) return parseFSDH(text);
   if (/ACCOUNT STATEMENT/i.test(text) && /IBAN AE/i.test(text)) return parseFAB(text);
+  if (/STATEMENT OF ACCOUNT/.test(text) && /OPENING\s*BALANCE/.test(text) && /REMARKS/.test(text)) return parseFSDHv2(text);
   throw new Error(
-    "Unrecognised PDF statement layout. Supported formats: FSDH Merchant Bank and FAB (First Abu Dhabi Bank).",
+    "Unrecognised PDF statement layout. Supported formats: FSDH Merchant Bank (\"Customer Statement of Account\" and \"Statement of Account\") and FAB (First Abu Dhabi Bank).",
   );
 }
